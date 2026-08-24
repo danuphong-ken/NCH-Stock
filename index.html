@@ -93,6 +93,18 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 .rpt-table th{background:#f5eeff;color:#6c3483;padding:8px;text-align:left;font-weight:600}
 .rpt-table td{padding:7px 8px;border-bottom:1px solid #f0e8ff}
 .rpt-total{font-weight:700;background:#fdf8ff}
+/* ─── HISTORY ─── */
+.hist-item{background:#fff;border-radius:12px;margin-bottom:10px;box-shadow:0 1px 6px rgba(0,0,0,.07);overflow:hidden}
+.hist-hd{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;border-left:4px solid #6c3483}
+.hist-hd.completed{border-left-color:#27ae60}
+.hist-hd.in_progress{border-left-color:#f39c12}
+.hist-title{font-size:14px;font-weight:700;color:#1a1a2e}
+.hist-sub{font-size:12px;color:#888;margin-top:2px}
+.hist-badge{font-size:11px;border-radius:20px;padding:3px 10px;font-weight:600;white-space:nowrap}
+.hist-badge.completed{background:#d5f5e3;color:#1e8449}
+.hist-badge.in_progress{background:#fef9e7;color:#b7770d}
+.hist-body{display:none;padding:12px 14px;border-top:1px solid #f0e8ff}
+.hist-btn-row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
 /* ─── STATS ─── */
 .stats-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px}
 .stat-box{background:#fff;border-radius:10px;padding:12px 8px;text-align:center;box-shadow:0 1px 6px rgba(0,0,0,.07)}
@@ -183,6 +195,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
     <div class="tab active" onclick="go('count')" id="tab-count">📦 นับสต็อก</div>
     <div class="tab" onclick="go('products')" id="tab-products">🏷️ สินค้า</div>
     <div class="tab" onclick="go('report')" id="tab-report">📊 รายงาน</div>
+    <div class="tab" onclick="go('history')" id="tab-history">📋 ประวัติ</div>
     <div class="tab" onclick="go('settings')" id="tab-settings">⚙️ ตั้งค่า</div>
   </div>
 
@@ -305,6 +318,15 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
       <div id="report-list">
         <div class="empty"><div class="em-icon">📊</div><p>เลือกสาขา/วันที่เพื่อดูรายงาน</p></div>
       </div>
+    </div>
+
+    <!-- ══════════ HISTORY PAGE ══════════ -->
+    <div class="page" id="page-history">
+      <div class="card" style="margin-bottom:12px">
+        <h3>📋 ประวัติการนับสินค้า</h3>
+        <p style="font-size:13px;color:#888;margin-top:4px">รายการ Session ทั้งหมด — กดที่รายการเพื่อดูรายงานหรือ Export Excel</p>
+      </div>
+      <div id="history-list"><div class="empty"><div class="em-icon">📋</div><p>กำลังโหลด...</p></div></div>
     </div>
 
     <!-- ══════════ SETTINGS PAGE ══════════ -->
@@ -489,6 +511,7 @@ function go(page){
   document.getElementById('page-'+page).classList.add('active');
   document.getElementById('tab-'+page).classList.add('active');
   if(page==='report') loadReport();
+  if(page==='history') loadHistory();
   if(page==='products') renderProds();
 }
 
@@ -635,7 +658,9 @@ async function endSession(){
   if(error){ toast('❌ '+error.message); return; }
   currentSession.status = 'completed';
   updateSessionUI();
-  toast('✅ จบรอบนับแล้ว');
+  toast('✅ จบรอบนับแล้ว — กำลัง Export Excel...');
+  // Auto-export Excel for this session
+  setTimeout(function(){ autoExportSession(currentSession, counts); }, 500);
 }
 
 function newSession(){
@@ -1370,6 +1395,186 @@ function toast(msg, dur){
 function esc(s){
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+
+// ═══════════════════════════════════════
+//  HISTORY — ดู Session ย้อนหลัง
+// ═══════════════════════════════════════
+var historyData = [];
+
+async function loadHistory(){
+  var el = document.getElementById('history-list');
+  el.innerHTML = '<div class="empty"><div class="em-icon">⏳</div><p>กำลังโหลด...</p></div>';
+  var { data, error } = await supabase.from('count_sessions')
+    .select('id, branch, count_date, counter_name, status, completed_at, created_at')
+    .order('created_at', { ascending: false });
+  if(error){ el.innerHTML = '<div class="empty"><p>❌ '+esc(error.message)+'</p></div>'; return; }
+  historyData = data || [];
+  renderHistoryList();
+}
+
+function renderHistoryList(){
+  var el = document.getElementById('history-list');
+  if(!historyData.length){ el.innerHTML = '<div class="empty"><div class="em-icon">📋</div><p>ยังไม่มีประวัติการนับ</p></div>'; return; }
+  el.innerHTML = historyData.map(function(s, i){
+    var statusLabel = s.status === 'completed' ? '✅ เสร็จแล้ว' : '🔄 กำลังนับ';
+    var dateStr = s.count_date || '';
+    var doneAt = s.completed_at ? (' | เสร็จ: '+s.completed_at.slice(0,16).replace('T',' ')) : '';
+    return '<div class="hist-item">'+
+      '<div class="hist-hd '+esc(s.status)+'" onclick="toggleHistBody('+i+')">'+
+        '<div>'+
+          '<div class="hist-title">'+esc(s.branch)+' — '+esc(dateStr)+'</div>'+
+          '<div class="hist-sub">ผู้นับ: '+esc(s.counter_name)+doneAt+'</div>'+
+        '</div>'+
+        '<span class="hist-badge '+esc(s.status)+'">'+statusLabel+'</span>'+
+      '</div>'+
+      '<div class="hist-body" id="hist-body-'+i+'">'+
+        '<div class="hist-btn-row">'+
+          (s.status==='in_progress' ? '<button class="btn btn-primary btn-sm" onclick="resumeSession('+i+')">▶️ นับต่อ</button>' : '')+
+          '<button class="btn btn-success btn-sm" onclick="exportHistoryExcel('+i+')">📥 Export Excel</button>'+
+          '<button class="btn btn-outline btn-sm" onclick="exportHistoryCSV('+i+')">⬇️ Export CSV</button>'+
+        '</div>'+
+        '<div id="hist-items-'+i+'" style="font-size:13px;color:#888">กดปุ่ม Export เพื่อดาวน์โหลด หรือรอโหลดข้อมูล...</div>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+function toggleHistBody(i){
+  var body = document.getElementById('hist-body-'+i);
+  var isOpen = body.style.display === 'block';
+  body.style.display = isOpen ? 'none' : 'block';
+  if(!isOpen) loadHistoryItems(i);
+}
+
+async function loadHistoryItems(i){
+  var s = historyData[i];
+  if(!s) return;
+  var el = document.getElementById('hist-items-'+i);
+  el.textContent = 'กำลังโหลดรายการ...';
+  var { data, error } = await supabase.from('count_items')
+    .select('*').eq('session_id', s.id);
+  if(error){ el.textContent = '❌ '+error.message; return; }
+  s._items = data || [];
+  var agg = buildAggFromItems(s._items);
+  var totalQty = agg.reduce(function(a,r){ return a+r.quantity; },0);
+  el.textContent = 'SKU: '+agg.length+' รายการ | รวม: '+totalQty+' ชิ้น';
+}
+
+function buildAggFromItems(items){
+  var aggMap = {};
+  (items||[]).forEach(function(i){
+    var key = i.barcode || i.product_name || '?';
+    if(!aggMap[key]){
+      var prod = prods[i.barcode] || {};
+      aggMap[key] = { barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
+        product_name: i.product_name||'', unit: i.unit||prod.unit||'ชิ้น',
+        quantity: 0, price: parseFloat(prod.price)||0, balance: parseFloat(prod.balance)||0 };
+    }
+    aggMap[key].quantity += i.quantity;
+  });
+  var aggItems = Object.values(aggMap);
+  aggItems.sort(function(a,b){ return (a.product_code||'').localeCompare(b.product_code||''); });
+  return aggItems;
+}
+
+async function exportHistoryExcel(i){
+  var s = historyData[i];
+  if(!s) return;
+  if(!s._items){
+    var { data, error } = await supabase.from('count_items').select('*').eq('session_id', s.id);
+    if(error){ toast('❌ '+error.message); return; }
+    s._items = data || [];
+  }
+  buildAndDownloadExcel(s, s._items);
+}
+
+async function exportHistoryCSV(i){
+  var s = historyData[i];
+  if(!s) return;
+  if(!s._items){
+    var { data, error } = await supabase.from('count_items').select('*').eq('session_id', s.id);
+    if(error){ toast('❌ '+error.message); return; }
+    s._items = data || [];
+  }
+  buildAndDownloadCSV(s, s._items);
+}
+
+function buildAndDownloadExcel(s, items){
+  if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
+  var agg = buildAggFromItems(items);
+  var thaiDate = (s.count_date||'').split('-').reverse().join('/');
+  var wsData = [];
+  wsData.push(['ใบรายงานการตรวจนับสินค้า : Brand NCH','','','','','','','']);
+  wsData.push(['Inventory Check List Report','','','','','','','']);
+  wsData.push(['ห้าง/Department:',s.branch,'','สาขา/Branch:',s.branch,'','วันที่/Date:',thaiDate]);
+  wsData.push(['ผู้นับ:',s.counter_name,'','','','','','']);
+  wsData.push([]);
+  wsData.push(['ลำดับ','Barcode','Item Number\nรหัสสินค้า','ชื่อสินค้า','ยอดคงเหลือ\nA/C Balance','ยอดนับจริง\nCount','ผลต่าง\nDifference']);
+  agg.forEach(function(r, idx){
+    var diff = r.quantity - (r.balance||0);
+    wsData.push([idx+1, r.barcode, r.product_code, r.product_name, r.balance||0, r.quantity, diff]);
+  });
+  var gBal = agg.reduce(function(a,r){ return a+(r.balance||0); },0);
+  var gQty = agg.reduce(function(a,r){ return a+r.quantity; },0);
+  wsData.push(['','','','รวมทั้งหมด',gBal,gQty,gQty-gBal]);
+  wsData.push([]);
+  wsData.push(['ลายเซ็น ผู้ตรวจนับ','','','','ลายเซ็น พนักงานขาย','','','']);
+  wsData.push(['','','','','','','','']);
+  wsData.push(['__________________________','','','','__________________________','','','']);
+  wsData.push(['หัวหน้าเขต / Area Manager','','','','พนักงานขาย / Sales','','','']);
+  wsData.push([]);
+  wsData.push(['ลายเซ็น ผู้รับผิดชอบ Loss Stock','','','','ลายเซ็น ผู้ตรวจสอบ บัญชีสต็อค','','','']);
+  wsData.push(['','','','','','','','']);
+  wsData.push(['__________________________','','','','__________________________','','','']);
+  wsData.push(['Loss Stock','','','','Stock Auditor / หัวหน้าแผนกบัญชี','','','']);
+  var ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws['!cols'] = [{wch:6},{wch:16},{wch:16},{wch:30},{wch:14},{wch:14},{wch:12}];
+  ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:1,c:0},e:{r:1,c:7}}];
+  var wb = XLSX.utils.book_new();
+  var sheetName = (s.branch||'Sheet').replace(/สาขา /,'').slice(0,20);
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  var filename = 'NCH_CheckStock_'+(s.branch||'')+'_'+(s.count_date||'')+'.xlsx';
+  XLSX.writeFile(wb, filename);
+  toast('📥 ดาวน์โหลด: '+filename);
+}
+
+function buildAndDownloadCSV(s, items){
+  var agg = buildAggFromItems(items);
+  var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number','ชื่อสินค้า','ยอดคงเหลือ','ยอดนับจริง','ผลต่าง']];
+  agg.forEach(function(r, idx){
+    var diff = r.quantity - (r.balance||0);
+    rows.push([s.branch, s.count_date, s.counter_name, idx+1, r.barcode, r.product_code, r.product_name, r.balance||0, r.quantity, diff]);
+  });
+  var csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c||'').replace(/"/g,'""')+'"'; }).join(','); }).join('\r\n');
+  var blob = new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href=url;
+  a.download = 'NCH_CheckStock_'+(s.branch||'')+'_'+(s.count_date||'')+'.csv';
+  a.click(); URL.revokeObjectURL(url);
+}
+
+// ─── Resume Session จาก History ───
+async function resumeSession(i){
+  var s = historyData[i];
+  if(!s || s.status !== 'in_progress') return;
+  // โหลด count_items ของ session นี้
+  var { data, error } = await supabase.from('count_items')
+    .select('*').eq('session_id', s.id).order('scanned_at', { ascending: false });
+  if(error){ toast('❌ '+error.message); return; }
+  currentSession = s;
+  counts = data || [];
+  updateSessionUI();
+  renderCounts();
+  go('count');
+  toast('▶️ นับต่อ: '+s.branch+' | '+s.count_date);
+}
+
+// Auto-export เมื่อจบรอบ
+function autoExportSession(session, items){
+  if(!session || !items || !items.length) return;
+  buildAndDownloadExcel(session, items);
+}
+
 </script>
 </body>
 </html>
