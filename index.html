@@ -8,6 +8,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <!-- ZXing barcode fallback -->
 <script async src="https://cdn.jsdelivr.net/npm/@zxing/library@0.19.2/umd/index.min.js"></script>
+<!-- SheetJS for Excel export -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-height:100vh}
@@ -250,12 +252,21 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
           <button class="btn btn-outline btn-sm" onclick="document.getElementById('photo-prod').click()">📷</button>
         </div>
         <div class="inp-group">
+          <input type="text" id="p-code" placeholder="รหัสสินค้า">
+        </div>
+        <div class="inp-group">
           <input type="text" id="p-name" placeholder="ชื่อสินค้า">
         </div>
         <div class="inp-group">
-          <input type="text" id="p-cat" placeholder="หมวดหมู่" list="cat-list">
-          <datalist id="cat-list"></datalist>
-          <input type="text" id="p-unit" placeholder="หน่วย" style="max-width:100px">
+          <input type="text" id="p-unit" placeholder="หน่วย">
+        </div>
+        <div class="inp-group">
+          <input type="number" id="p-price" placeholder="ราคา (บาท)" step="0.01" min="0" style="flex:1">
+          <span style="display:flex;align-items:center;font-size:13px;color:#888;padding:0 6px">บาท</span>
+        </div>
+        <div class="inp-group">
+          <input type="number" id="p-balance" placeholder="ยอดคงเหลือ (ระบบบัญชี)" step="0.01" min="0" style="flex:1">
+          <span style="display:flex;align-items:center;font-size:13px;color:#888;padding:0 6px">ชิ้น</span>
         </div>
         <div class="btn-row">
           <button class="btn btn-primary" onclick="saveProd()" id="btn-save-prod">💾 บันทึก</button>
@@ -264,10 +275,9 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <div id="prod-err" style="color:#e74c3c;font-size:13px;min-height:18px"></div>
       </div>
 
-      <!-- Search + Category filter -->
+      <!-- Search -->
       <div class="card" style="padding-bottom:8px">
-        <input type="search" id="prod-search" placeholder="🔍 ค้นหาสินค้า" style="width:100%;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:8px" oninput="renderProds()">
-        <div class="cat-strip" id="cat-strip"></div>
+        <input type="search" id="prod-search" placeholder="🔍 ค้นหาสินค้า / รหัส / Barcode" style="width:100%;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px" oninput="renderProds()">
       </div>
 
       <div id="prod-list">
@@ -289,6 +299,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         </select>
         <input type="date" id="rpt-date" onchange="loadReport()">
         <button class="btn btn-outline btn-sm" onclick="exportCSV()">⬇️ CSV</button>
+        <button class="btn btn-success btn-sm" onclick="exportExcel()">📥 Excel</button>
       </div>
 
       <div id="report-list">
@@ -303,14 +314,55 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <p style="font-size:14px;color:#555;margin-bottom:8px">อีเมล: <strong id="set-email">—</strong></p>
         <button class="btn btn-danger btn-sm" onclick="doLogout()">ออกจากระบบ</button>
       </div>
+      <!-- ── นำเข้าสินค้า (ครั้งเดียว) ── -->
       <div class="card">
-        <h3>📦 นำเข้าสินค้า (CSV)</h3>
-        <p style="font-size:13px;color:#888;margin-bottom:10px">รูปแบบ: barcode, ชื่อสินค้า, หมวดหมู่, หน่วย</p>
-        <input type="file" accept=".csv" id="import-csv" onchange="importCSV(this)" style="font-size:13px">
+        <h3>📦 นำเข้าสินค้า <span style="font-size:11px;color:#888;font-weight:400">(ทำครั้งเดียว — ข้อมูลอยู่ใน Database ถาวร)</span></h3>
+        <p style="font-size:13px;color:#888;margin-bottom:10px">
+          รองรับ <strong>Template_Data.xlsx</strong> โดยตรง<br>
+          คอลัมน์: Barcode | รหัส | รายการ | หน่วย | คงเหลือ บ/ช | ราคา
+        </p>
+        <div class="btn-row" style="margin-bottom:8px">
+          <label class="btn btn-primary" style="cursor:pointer">
+            📥 Excel (.xlsx)
+            <input type="file" accept=".xlsx,.xls" id="import-xlsx" onchange="importXLSX(this)" style="display:none">
+          </label>
+          <label class="btn btn-outline" style="cursor:pointer">
+            📄 CSV (.csv)
+            <input type="file" accept=".csv" id="import-csv" onchange="importCSV(this)" style="display:none">
+          </label>
+        </div>
+        <div id="import-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
+      </div>
+
+      <!-- ── อัปเดตยอดคงเหลือ (ก่อนนับแต่ละครั้ง) ── -->
+      <div class="card">
+        <h3>📊 อัปเดตยอดคงเหลือ <span style="font-size:11px;color:#888;font-weight:400">(ทำก่อนนับแต่ละครั้ง)</span></h3>
+        <p style="font-size:13px;color:#888;margin-bottom:10px">
+          Import เฉพาะยอดคงเหลือจากระบบบัญชี<br>
+          คอลัมน์ที่ต้องมี: <strong>รหัสสินค้า</strong> และ <strong>ยอดคงเหลือ</strong> (ไฟล์ 2 คอลัมน์ก็พอ)
+        </p>
+        <div style="background:#f5f5f5;border-radius:8px;padding:10px;font-size:12px;color:#555;margin-bottom:10px;font-family:monospace">
+          ตัวอย่าง CSV:<br>
+          รหัสสินค้า,ยอดคงเหลือ<br>
+          12255001203,50<br>
+          12355001203,20<br>
+          8850291102790,15
+        </div>
+        <div class="btn-row" style="margin-bottom:8px">
+          <label class="btn btn-success" style="cursor:pointer">
+            📊 Excel ยอดคงเหลือ (.xlsx)
+            <input type="file" accept=".xlsx,.xls" id="import-bal-xlsx" onchange="importBalanceXLSX(this)" style="display:none">
+          </label>
+          <label class="btn btn-outline" style="cursor:pointer">
+            📄 CSV ยอดคงเหลือ
+            <input type="file" accept=".csv" id="import-bal-csv" onchange="importBalanceCSV(this)" style="display:none">
+          </label>
+        </div>
+        <div id="import-bal-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
       </div>
       <div class="card">
         <h3>ℹ️ เกี่ยวกับ</h3>
-        <p style="font-size:13px;color:#888">NCH Stock Count v6 (Online)<br>นัทแคนดี้เฮาท์ จำกัด — ระบบนับสต็อกออนไลน์<br>รองรับหลายผู้ใช้พร้อมกัน</p>
+        <p style="font-size:13px;color:#888">NCH Stock Count v7 (Online)<br>นัทแคนดี้เฮาท์ จำกัด — ระบบนับสต็อกออนไลน์<br>รองรับหลายผู้ใช้พร้อมกัน | รายงานแบบ NCH Inventory Check List</p>
       </div>
     </div>
 
@@ -468,21 +520,23 @@ async function loadProducts(){
 }
 
 async function saveProd(){
-  var bc   = document.getElementById('p-bc').value.trim();
-  var name = document.getElementById('p-name').value.trim();
-  var cat  = document.getElementById('p-cat').value.trim() || 'ทั่วไป';
-  var unit = document.getElementById('p-unit').value.trim() || 'ชิ้น';
+  var bc    = document.getElementById('p-bc').value.trim();
+  var code  = document.getElementById('p-code').value.trim();
+  var name  = document.getElementById('p-name').value.trim();
+  var unit  = document.getElementById('p-unit').value.trim() || 'ชิ้น';
+  var price   = parseFloat(document.getElementById('p-price').value)   || 0;
+  var balance = parseFloat(document.getElementById('p-balance').value) || 0;
   document.getElementById('prod-err').textContent = '';
   if(!bc){ document.getElementById('prod-err').textContent = 'กรุณากรอก Barcode'; return; }
   if(!name){ document.getElementById('prod-err').textContent = 'กรุณากรอกชื่อสินค้า'; return; }
 
   setSyncDot('syncing');
-  var row = { barcode: bc, name, category: cat, unit, created_by: currentUser.id };
+  var row = { barcode: bc, product_code: code, name, unit, price, balance, created_by: currentUser.id };
   var { error } = await supabase.from('products').upsert(row, { onConflict: 'barcode' });
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ บันทึกไม่ได้: '+error.message); return; }
   prods[bc] = row;
-  clearProdForm(); renderProds(); buildCatList();
+  clearProdForm(); renderProds();
   toast('✅ บันทึกสินค้าแล้ว');
 }
 
@@ -498,51 +552,47 @@ async function deleteProd(bc){
 
 function editProd(bc){
   var p = prods[bc]; if(!p) return;
-  document.getElementById('p-bc').value   = bc;
-  document.getElementById('p-name').value = p.name || '';
-  document.getElementById('p-cat').value  = p.category || '';
-  document.getElementById('p-unit').value = p.unit || '';
+  document.getElementById('p-bc').value    = bc;
+  document.getElementById('p-code').value  = p.product_code || '';
+  document.getElementById('p-name').value  = p.name || '';
+  document.getElementById('p-unit').value  = p.unit || '';
+  document.getElementById('p-price').value   = p.price   || '';
+  document.getElementById('p-balance').value = p.balance || '';
   go('products');
   document.getElementById('p-name').focus();
 }
 
 function clearProdForm(){
-  ['p-bc','p-name','p-cat','p-unit'].forEach(function(id){ document.getElementById(id).value=''; });
+  ['p-bc','p-code','p-name','p-unit','p-price','p-balance'].forEach(function(id){ document.getElementById(id).value=''; });
   document.getElementById('prod-err').textContent='';
 }
 
-function buildCatList(){
-  var cats = new Set(); Object.values(prods).forEach(function(p){ if(p.category) cats.add(p.category); });
-  // datalist
-  var dl = document.getElementById('cat-list'); dl.innerHTML='';
-  cats.forEach(function(c){ var o=document.createElement('option'); o.value=c; dl.appendChild(o); });
-  // cat strip
-  var strip = document.getElementById('cat-strip');
-  strip.innerHTML = '';
-  var all = document.createElement('div'); all.className='cat-chip'+(activeCat==='ทั้งหมด'?' active':'');
-  all.textContent='ทั้งหมด'; all.onclick=function(){ activeCat='ทั้งหมด'; renderProds(); }; strip.appendChild(all);
-  cats.forEach(function(c){
-    var chip=document.createElement('div'); chip.className='cat-chip'+(activeCat===c?' active':'');
-    chip.textContent=c; chip.onclick=function(){ activeCat=c; renderProds(); }; strip.appendChild(chip);
-  });
-}
+function buildCatList(){ /* ไม่ใช้แล้ว — ลบ category ออก */ }
 
 function renderProds(){
-  buildCatList();
   var search = (document.getElementById('prod-search')||{value:''}).value.toLowerCase();
   var list = Object.values(prods).filter(function(p){
-    var matchCat = (activeCat==='ทั้งหมด') || p.category===activeCat;
-    var matchSearch = !search || p.name.toLowerCase().includes(search) || p.barcode.includes(search);
-    return matchCat && matchSearch;
+    return !search ||
+      (p.name||'').toLowerCase().includes(search) ||
+      (p.barcode||'').includes(search) ||
+      (p.product_code||'').toLowerCase().includes(search);
   });
   var el = document.getElementById('prod-list');
   if(!list.length){ el.innerHTML='<div class="empty"><div class="em-icon">🏷️</div><p>ไม่มีสินค้า</p></div>'; return; }
   el.innerHTML = list.map(function(p){
+    var priceStr   = p.price   ? parseFloat(p.price).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2})+' บ.' : '—';
+    var balanceStr = p.balance ? parseFloat(p.balance).toLocaleString()+'  ชิ้น' : '—';
     return '<div class="prod-item">'+
-      '<div style="flex:1"><div class="prod-name">'+esc(p.name)+'</div>'+
-      '<div class="prod-bc">'+esc(p.barcode)+'</div>'+
-      '<span class="prod-cat">'+esc(p.category||'ทั่วไป')+'</span> '+
-      '<span style="font-size:11px;color:#aaa">'+esc(p.unit||'ชิ้น')+'</span></div>'+
+      '<div style="flex:1">'+
+      '<div class="prod-name">'+esc(p.name)+'</div>'+
+      '<div class="prod-bc">Barcode: '+esc(p.barcode)+'</div>'+
+      '<div class="prod-bc">รหัส: '+esc(p.product_code||'—')+'</div>'+
+      '<div style="display:flex;gap:8px;margin-top:2px;flex-wrap:wrap">'+
+      '<span style="font-size:11px;color:#6c3483;background:#f0e8ff;border-radius:10px;padding:2px 8px">'+esc(p.unit||'ชิ้น')+'</span>'+
+      '<span style="font-size:11px;color:#27ae60;background:#eafaf1;border-radius:10px;padding:2px 8px">'+priceStr+'</span>'+
+      '<span style="font-size:11px;color:#1a6e9e;background:#e8f4fd;border-radius:10px;padding:2px 8px">คงเหลือ: '+balanceStr+'</span>'+
+      '</div>'+
+      '</div>'+
       '<div class="prod-actions">'+
       '<button class="btn btn-outline btn-sm" onclick="editProd(\''+esc(p.barcode)+'\')">✏️</button>'+
       '<button class="btn btn-danger btn-sm" onclick="deleteProd(\''+esc(p.barcode)+'\')">🗑️</button>'+
@@ -618,8 +668,8 @@ async function addCount(bc, qty){
   var item = {
     session_id:   currentSession.id,
     barcode:      bc,
+    product_code: p ? (p.product_code||'') : '',
     product_name: p ? p.name : '(ไม่ทราบชื่อ)',
-    category:     p ? p.category : '',
     unit:         p ? p.unit : 'ชิ้น',
     quantity:     qty,
     scanned_at:   new Date().toISOString()
@@ -733,7 +783,7 @@ function showOverlay(state, bc, prod){
       '<h3>'+(camTarget==='product'?'🏷️ พบ Barcode':'📦 พบ Barcode')+'</h3>'+
       '<div class="ov-bc">'+esc(bc)+'</div><br>'+
       '<div class="ov-name">'+name+'</div>'+
-      '<div class="ov-cat">'+(prod?esc(prod.category||''):'')+'</div>'+
+      '<div class="ov-cat">'+(prod?'รหัส: '+esc(prod.product_code||'—'):'')+'</div>'+
       '<p style="margin-top:10px;font-size:12px;color:#bbb">ยืนยันอัตโนมัติใน 1 วินาที</p>'+
       '<div class="ov-btns" style="margin-top:14px">'+
       '<button class="btn btn-success" onclick="confirmPhoto()">✅ ยืนยัน</button>'+
@@ -773,8 +823,8 @@ function confirmPhoto(){
   closeOverlay();
   if(camTarget === 'product'){
     document.getElementById('p-bc').value = bc;
-    if(prods[bc]){ editProd(bc); toast('📷 โหลดสินค้าที่มีอยู่'); }
-    else { go('products'); document.getElementById('p-name').focus(); toast('📷 Barcode: '+bc); }
+    if(prods[bc]){ editProd(bc); toast('📷 โหลดสินค้าที่มีอยู่แล้ว'); }
+    else { go('products'); document.getElementById('p-code').focus(); toast('📷 Barcode: '+bc+' — กรอกรหัส/ชื่อสินค้า'); }
   } else {
     var qty = parseInt(document.getElementById('qty-input').value) || 1;
     addCount(bc, qty);
@@ -814,21 +864,102 @@ async function loadReport(){
 
   el.innerHTML = (data||[]).map(function(s, si){
     var items = s.count_items || [];
-    var total = items.reduce(function(a,i){ return a+i.quantity; }, 0);
-    return '<div class="rpt-session">'+
-      '<div class="rpt-session-hd" onclick="toggleRpt('+si+')">'+
-      '<div><h4>'+esc(s.branch)+'</h4><span>'+s.count_date+' | '+esc(s.counter_name)+'</span></div>'+
-      '<span>'+total.toLocaleString()+' ชิ้น ▾</span></div>'+
+    // Aggregate by barcode
+    var aggMap = {};
+    items.forEach(function(i){
+      var key = i.barcode || i.product_name || '?';
+      if(!aggMap[key]){
+        var prod = prods[i.barcode] || {};
+        aggMap[key] = {
+          barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
+          product_name: i.product_name||'', unit: i.unit||prod.unit||'ชิ้น',
+          quantity: 0, price: parseFloat(prod.price)||0,
+          balance: parseFloat(prod.balance)||0
+        };
+      }
+      aggMap[key].quantity += i.quantity;
+    });
+    var aggItems = Object.values(aggMap);
+    aggItems.sort(function(a,b){ return (a.product_code||'').localeCompare(b.product_code||''); });
+
+    var grandQty  = aggItems.reduce(function(a,i){ return a+i.quantity; }, 0);
+    var grandVal  = aggItems.reduce(function(a,i){ return a+(i.quantity*i.price); }, 0);
+    var thaiDate  = s.count_date ? s.count_date.split('-').reverse().join('/') : '';
+    var now       = new Date(); var timeStr = now.getHours()+':'+(now.getMinutes()<10?'0':'')+now.getMinutes();
+
+    return '<div class="rpt-session" style="page-break-after:always">'+
+      '<div class="rpt-session-hd" onclick="toggleRpt('+si+')" style="cursor:pointer">'+
+      '<div><h4 style="font-size:14px">📋 '+esc(s.branch)+'</h4>'+
+      '<span style="font-size:12px;color:#666">'+s.count_date+' | ผู้นับ: '+esc(s.counter_name)+'</span></div>'+
+      '<span style="font-size:13px;font-weight:700;color:#6c3483">'+grandQty.toLocaleString()+' ชิ้น ▾</span></div>'+
       '<div class="rpt-session-body" id="rpt-body-'+si+'">'+
-      '<table class="rpt-table"><tr><th>Barcode</th><th>ชื่อสินค้า</th><th>หมวด</th><th>จำนวน</th><th>หน่วย</th></tr>'+
-      items.map(function(i){
-        return '<tr><td>'+esc(i.barcode||'')+'</td><td>'+esc(i.product_name||'')+'</td><td>'+esc(i.category||'')+'</td><td style="text-align:right;font-weight:600">'+i.quantity+'</td><td>'+esc(i.unit||'')+'</td></tr>';
+      // NCH Report Header
+      '<div style="text-align:center;margin-bottom:8px;padding:8px;background:#f9f5ff;border-radius:8px">'+
+      '<div style="font-size:15px;font-weight:700;color:#4a235a">ใบรายงานการตรวจนับสินค้า : Brand NCH</div>'+
+      '<div style="font-size:12px;color:#666">Inventory Check List Report</div>'+
+      '<div style="font-size:12px;margin-top:4px;display:flex;justify-content:center;gap:24px;flex-wrap:wrap">'+
+      '<span>ห้าง/Department: <strong>'+esc(s.branch)+'</strong></span>'+
+      '<span>สาขา/Branch: <strong>'+esc(s.branch)+'</strong></span>'+
+      '<span>วันที่/Date: <strong>'+thaiDate+'</strong></span>'+
+      '<span>ผู้นับ: <strong>'+esc(s.counter_name)+'</strong></span>'+
+      '</div></div>'+
+      // Table
+      '<div style="overflow-x:auto">'+
+      '<table class="rpt-table" style="min-width:540px">'+
+      '<thead><tr>'+
+      '<th style="text-align:center;width:36px">ลำดับ</th>'+
+      '<th>Barcode</th>'+
+      '<th>Item Number<br><small style="font-weight:400;color:#888">รหัสสินค้า</small></th>'+
+      '<th style="text-align:right">ยอดคงเหลือ<br><small style="font-weight:400;color:#888">A/C Balance</small></th>'+
+      '<th style="text-align:right">ยอดนับจริง<br><small style="font-weight:400;color:#888">Count</small></th>'+
+      '<th style="text-align:right">ผลต่าง<br><small style="font-weight:400;color:#888">Difference</small></th>'+
+      '</tr></thead><tbody>'+
+      aggItems.map(function(i, idx){
+        var diff    = i.quantity - i.balance;
+        var diffClr = diff < 0 ? '#e74c3c' : diff > 0 ? '#27ae60' : '#888';
+        var diffTxt = (diff > 0 ? '+' : '') + diff.toLocaleString();
+        return '<tr>'+
+          '<td style="text-align:center;color:#999">'+(idx+1)+'</td>'+
+          '<td style="font-family:monospace;font-size:12px">'+esc(i.barcode||'')+'<br>'+
+          '<span style="font-size:10px;color:#aaa">'+esc(i.product_name||'')+'</span></td>'+
+          '<td style="font-family:monospace;font-size:12px">'+esc(i.product_code||'')+'</td>'+
+          '<td style="text-align:right">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
+          '<td style="text-align:right;font-weight:700;color:#6c3483">'+i.quantity.toLocaleString()+'</td>'+
+          '<td style="text-align:right;font-weight:700;color:'+diffClr+'">'+diffTxt+'</td>'+
+          '</tr>';
       }).join('')+
-      '<tr class="rpt-total"><td colspan="3">รวม</td><td style="text-align:right">'+total.toLocaleString()+'</td><td></td></tr>'+
-      '</table></div></div>';
+      '</tbody><tfoot>'+
+      '<tr class="rpt-total" style="background:#f0e8ff">'+
+      '<td colspan="3" style="text-align:right;font-weight:700">รวมทั้งหมด</td>'+
+      '<td style="text-align:right;font-weight:700">'+aggItems.reduce(function(a,i){return a+i.balance;},0).toLocaleString()+'</td>'+
+      '<td style="text-align:right;font-weight:700;color:#6c3483">'+grandQty.toLocaleString()+'</td>'+
+      '<td style="text-align:right;font-weight:700;color:'+(grandQty-aggItems.reduce(function(a,i){return a+i.balance;},0)<0?'#e74c3c':grandQty-aggItems.reduce(function(a,i){return a+i.balance;},0)>0?'#27ae60':'#888')+'">'+
+      (function(){ var d=grandQty-aggItems.reduce(function(a,i){return a+i.balance;},0); return (d>0?'+':'')+d.toLocaleString(); })()+'</td>'+
+      '</tr></tfoot>'+
+      '</table></div>'+
+      // Signature Footer
+      '<div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:12px;color:#333">'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
+      '<div style="margin-bottom:32px">ลายเซ็น ผู้ตรวจนับ</div>'+
+      '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
+      '<div style="color:#666">หัวหน้าเขต / Area Manager</div></div>'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
+      '<div style="margin-bottom:32px">ลายเซ็น พนักงานขาย</div>'+
+      '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
+      '<div style="color:#666">พนักงานขาย / Sales</div></div>'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
+      '<div style="margin-bottom:32px">ลายเซ็น ผู้รับผิดชอบ</div>'+
+      '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
+      '<div style="color:#666">Loss Stock</div></div>'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
+      '<div style="margin-bottom:32px">ลายเซ็น ผู้ตรวจสอบ</div>'+
+      '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
+      '<div style="color:#666">ผู้ตรวจสอบ บัญชีสต็อค / Stock Auditor</div></div>'+
+      '</div>'+
+      '</div></div>';
   }).join('');
 
-  // store for CSV export
+  // store for export
   window._rptData = data;
 }
 
@@ -837,52 +968,391 @@ function toggleRpt(i){
   b.style.display = b.style.display === 'block' ? 'none' : 'block';
 }
 
-function exportCSV(){
+function buildAggData(){
   var data = window._rptData;
-  if(!data || !data.length){ toast('⚠️ ไม่มีข้อมูล'); return; }
-  var rows = [['สาขา','วันที่','ผู้นับ','Barcode','ชื่อสินค้า','หมวดหมู่','จำนวน','หน่วย']];
-  data.forEach(function(s){
+  if(!data || !data.length){ return null; }
+  return data.map(function(s){
+    var aggMap = {};
     (s.count_items||[]).forEach(function(i){
-      rows.push([s.branch, s.count_date, s.counter_name, i.barcode||'', i.product_name||'', i.category||'', i.quantity, i.unit||'']);
+      var key = i.barcode || i.product_name || '?';
+      if(!aggMap[key]){
+        var prod = prods[i.barcode] || {};
+        aggMap[key] = {
+          barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
+          product_name: i.product_name||'', unit: i.unit||prod.unit||'ชิ้น',
+          quantity: 0, price: parseFloat(prod.price)||0,
+          balance: parseFloat(prod.balance)||0
+        };
+      }
+      aggMap[key].quantity += i.quantity;
     });
-    var total = (s.count_items||[]).reduce(function(a,i){ return a+i.quantity; },0);
-    rows.push([s.branch, s.count_date, s.counter_name, '', 'รวม', '', total, '']);
+    var aggItems = Object.values(aggMap);
+    aggItems.sort(function(a,b){ return (a.product_code||'').localeCompare(b.product_code||''); });
+    return { session: s, items: aggItems };
   });
-  var csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c).replace(/"/g,'""')+'"'; }).join(','); }).join('\r\n');
-  var bom = '﻿';
-  var blob = new Blob([bom+csv], {type:'text/csv;charset=utf-8'});
+}
+
+function exportCSV(){
+  var agg = buildAggData();
+  if(!agg){ toast('⚠️ ไม่มีข้อมูล'); return; }
+  var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number (รหัสสินค้า)','ชื่อสินค้า','ยอดคงเหลือ','ยอดนับจริง','ผลต่าง']];
+  agg.forEach(function(g){
+    var s = g.session;
+    g.items.forEach(function(i, idx){
+      var diff = i.quantity - i.balance;
+      rows.push([s.branch, s.count_date, s.counter_name, idx+1, i.barcode, i.product_code, i.product_name, i.balance||0, i.quantity, diff]);
+    });
+    var gBal = g.items.reduce(function(a,i){ return a+i.balance; },0);
+    var gQty = g.items.reduce(function(a,i){ return a+i.quantity; },0);
+    rows.push([s.branch, s.count_date, s.counter_name, '', '', 'รวมทั้งหมด', '', gBal, gQty, gQty-gBal]);
+    rows.push([]);
+  });
+  var csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c||'').replace(/"/g,'""')+'"'; }).join(','); }).join('\r\n');
+  var blob = new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8'});
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a'); a.href=url;
   var branch = document.getElementById('rpt-branch').value || 'ทุกสาขา';
   var date   = document.getElementById('rpt-date').value || new Date().toISOString().slice(0,10);
-  a.download = 'NCH_Stock_'+branch+'_'+date+'.csv';
+  a.download = 'NCH_CheckStock_'+branch+'_'+date+'.csv';
   a.click(); URL.revokeObjectURL(url);
+}
+
+function exportExcel(){
+  var agg = buildAggData();
+  if(!agg){ toast('⚠️ ไม่มีข้อมูล'); return; }
+  if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
+
+  var wb = XLSX.utils.book_new();
+  var branch = document.getElementById('rpt-branch').value || 'ทุกสาขา';
+  var date   = document.getElementById('rpt-date').value || new Date().toISOString().slice(0,10);
+
+  agg.forEach(function(g, gi){
+    var s = g.session;
+    var thaiDate = s.count_date ? s.count_date.split('-').reverse().join('/') : '';
+    var wsData = [];
+    // Title rows
+    wsData.push(['ใบรายงานการตรวจนับสินค้า : Brand NCH', '', '', '', '', '', '', '']);
+    wsData.push(['Inventory Check List Report', '', '', '', '', '', '', '']);
+    wsData.push(['ห้าง/Department:', s.branch, '', 'สาขา/Branch:', s.branch, '', 'วันที่/Date:', thaiDate]);
+    wsData.push(['ผู้นับ:', s.counter_name, '', '', '', '', '', '']);
+    wsData.push([]); // blank row
+    // Header
+    wsData.push(['ลำดับ','Barcode','Item Number\nรหัสสินค้า','ชื่อสินค้า','ยอดคงเหลือ\nA/C Balance','ยอดนับจริง\nCount','ผลต่าง\nDifference']);
+    // Data rows
+    g.items.forEach(function(i, idx){
+      var diff = i.quantity - (i.balance||0);
+      wsData.push([idx+1, i.barcode, i.product_code, i.product_name, i.balance||0, i.quantity, diff]);
+    });
+    // Total row
+    var gBal = g.items.reduce(function(a,i){ return a+(i.balance||0); },0);
+    var gQty = g.items.reduce(function(a,i){ return a+i.quantity; },0);
+    wsData.push(['', '', '', 'รวมทั้งหมด', gBal, gQty, gQty-gBal]);
+    wsData.push([]); // blank
+    // Signature rows
+    wsData.push(['ลายเซ็น ผู้ตรวจนับ', '', '', '', 'ลายเซ็น พนักงานขาย', '', '', '']);
+    wsData.push(['', '', '', '', '', '', '', '']);
+    wsData.push(['__________________________', '', '', '', '__________________________', '', '', '']);
+    wsData.push(['หัวหน้าเขต / Area Manager', '', '', '', 'พนักงานขาย / Sales', '', '', '']);
+    wsData.push([]);
+    wsData.push(['ลายเซ็น ผู้รับผิดชอบ Loss Stock', '', '', '', 'ลายเซ็น ผู้ตรวจสอบ บัญชีสต็อค', '', '', '']);
+    wsData.push(['', '', '', '', '', '', '', '']);
+    wsData.push(['__________________________', '', '', '', '__________________________', '', '', '']);
+    wsData.push(['Loss Stock', '', '', '', 'Stock Auditor / หัวหน้าแผนกบัญชี', '', '', '']);
+
+    var ws = XLSX.utils.aoa_to_sheet(wsData);
+    // Column widths
+    ws['!cols'] = [{wch:6},{wch:16},{wch:16},{wch:30},{wch:14},{wch:14},{wch:12}];
+    // Merge title rows
+    ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:1,c:0},e:{r:1,c:7}}];
+
+    var sheetName = (s.branch.replace(/สาขา /,'').slice(0,20)||('Sheet'+(gi+1)));
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  });
+
+  var filename = 'NCH_CheckStock_'+branch+'_'+date+'.xlsx';
+  XLSX.writeFile(wb, filename);
+  toast('📥 ดาวน์โหลด Excel: '+filename);
 }
 
 // ═══════════════════════════════════════
 //  Import CSV
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+//  Import Balance (ยอดคงเหลือ only)
+// ═══════════════════════════════════════
+function importBalanceXLSX(input){
+  var file = input.files[0]; if(!file) return;
+  if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      var wb = XLSX.read(e.target.result, {type:'array'});
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      processBalanceRows(raw, input, 'xlsx');
+    } catch(ex){ toast('❌ อ่านไฟล์ไม่ได้: '+ex.message); input.value=''; }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function importBalanceCSV(input){
+  var file = input.files[0]; if(!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    var lines = e.target.result.split('\n');
+    var raw = lines.map(function(l){
+      var cols=[], f='', q=false;
+      for(var i=0;i<l.length;i++){
+        var c=l[i];
+        if(c==='"'){q=!q;}
+        else if(c===',' && !q){cols.push(f.replace(/^"|"$/g,'').trim());f='';}
+        else{f+=c;}
+      }
+      cols.push(f.replace(/^"|"$/g,'').trim());
+      return cols;
+    });
+    processBalanceRows(raw, input, 'csv');
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+async function processBalanceRows(raw, input, fmt){
+  var statusEl = document.getElementById('import-bal-status');
+  statusEl.style.color = '#555';
+  statusEl.textContent = 'กำลังอ่านข้อมูล...';
+
+  // detect header row — skip rows where col0/col1 looks like a label
+  var isHeader = function(v){ return !v || /^(barcode|code|รหัส|description|รายการ|balance|คงเหลือ|uom|หน่วย|ราคา|price)/i.test(String(v)); };
+
+  // build map: code→balance (and barcode→balance)
+  var balMap = {}; // key = product_code or barcode → balance value
+  var skipped = 0;
+  for(var i=0; i<raw.length; i++){
+    var r = raw[i];
+    var c0 = String(r[0]||'').trim();
+    var c1 = String(r[1]||'').trim();
+
+    // skip header/empty rows
+    if(!c0 && !c1) continue;
+    if(isHeader(c0) && (isHeader(c1)||!c1)){ skipped++; continue; }
+
+    // detect layout:
+    // 2-col:  col0=รหัส/Barcode, col1=ยอดคงเหลือ
+    // full Template_Data: col0=Barcode, col1=Code, col4=Balance
+    var code, bal;
+    if(raw[i].length >= 5 && (raw[i][4]||raw[i][4]===0)){
+      // full Template_Data format
+      code = c1 || c0;
+      bal  = parseFloat(raw[i][4])||0;
+      if(c0) balMap[c0] = bal;   // barcode key
+      if(c1) balMap[c1] = bal;   // code key
+    } else {
+      // simple 2-col: Code, Balance
+      code = c0;
+      bal  = parseFloat(c1)||0;
+      if(code) balMap[code] = bal;
+    }
+  }
+
+  var keys = Object.keys(balMap);
+  if(!keys.length){ statusEl.style.color='#e74c3c'; statusEl.textContent='⚠️ ไม่พบข้อมูลยอดคงเหลือในไฟล์'; input.value=''; return; }
+
+  // match to existing products and build update list
+  var updates = [];
+  Object.values(prods).forEach(function(p){
+    var bal = balMap[p.barcode] !== undefined ? balMap[p.barcode]
+            : balMap[p.product_code] !== undefined ? balMap[p.product_code]
+            : null;
+    if(bal !== null){ updates.push({ barcode: p.barcode, balance: bal }); }
+  });
+
+  if(!updates.length){
+    statusEl.style.color='#e74c3c';
+    statusEl.textContent='⚠️ ไม่พบรหัสที่ตรงกับสินค้าใน Database ('+keys.length+' รหัสในไฟล์)';
+    input.value=''; return;
+  }
+
+  statusEl.textContent = 'กำลังอัปเดต 0/'+updates.length+'...';
+  setSyncDot('syncing');
+  var done = 0, errMsg = '';
+  for(var ui=0; ui<updates.length; ui++){
+    var upd = updates[ui];
+    var { error } = await supabase.from('products').update({ balance: upd.balance }).eq('barcode', upd.barcode);
+    if(error){ errMsg = error.message; break; }
+    prods[upd.barcode].balance = upd.balance;
+    done++;
+    statusEl.textContent = 'กำลังอัปเดต '+done+'/'+updates.length+'...';
+  }
+  setSyncDot(errMsg ? 'off' : 'on');
+  if(errMsg){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+errMsg; return; }
+
+  renderProds();
+  statusEl.style.color='#27ae60';
+  statusEl.textContent='✅ อัปเดตยอดคงเหลือ '+done+' รายการสำเร็จ (จากไฟล์ '+keys.length+' รหัส)';
+  toast('✅ อัปเดตยอดคงเหลือ '+done+' รายการ');
+  input.value='';
+}
+
+// ═══════════════════════════════════════
+//  Import XLSX (Template_Data.xlsx)
+// ═══════════════════════════════════════
+function importXLSX(input){
+  var file = input.files[0]; if(!file) return;
+  if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      var wb = XLSX.read(e.target.result, {type:'array'});
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+
+      // Skip header row(s): row where col1 is "รหัส" or "Code" etc.
+      var dataRows = raw.filter(function(r){
+        var c0 = String(r[0]||'').toLowerCase();
+        var c1 = String(r[1]||'').toLowerCase();
+        if(!r[2]) return false; // no name → skip
+        if(c0==='barcode'||c1==='รหัส'||c1==='code') return false;
+        return true;
+      });
+
+      var rows = dataRows.map(function(r){
+        var bc   = String(r[0]||'').trim();
+        var code = String(r[1]||'').trim();
+        var name = String(r[2]||'').trim();
+        var unit = String(r[3]||'ชิ้น').trim() || 'ชิ้น';
+        var bal  = parseFloat(r[4])||0;
+        var price= parseFloat(r[5])||0;
+        if(!bc && code) bc = code;
+        if(!bc || !name) return null;
+        return { barcode: bc, product_code: code, name: name, unit: unit, balance: bal, price: price, created_by: currentUser.id };
+      }).filter(Boolean);
+
+      if(!rows.length){ toast('⚠️ ไม่พบข้อมูลในไฟล์'); input.value=''; return; }
+      // Deduplicate by barcode — keep last occurrence (PostgreSQL cannot upsert same row twice in one batch)
+      var seen = {}, deduped = [];
+      rows.forEach(function(r){ seen[r.barcode] = r; });
+      deduped = Object.values(seen);
+      upsertProducts(deduped, input);
+    } catch(ex){ toast('❌ อ่านไฟล์ไม่ได้: '+ex.message); input.value=''; }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function upsertProducts(rows, input){
+  var statusEl = document.getElementById('import-status');
+  statusEl.textContent = 'กำลังนำเข้า 0/'+rows.length+'...';
+  setSyncDot('syncing');
+
+  // ลองครั้งแรกพร้อม balance — ถ้า column ยังไม่มีใน DB ให้ตัดออกแล้วลองใหม่
+  var useBalance = true;
+  var batchSize = 50, done = 0, errMsg = '';
+
+  for(var bi=0; bi<rows.length; bi+=batchSize){
+    var batch = rows.slice(bi, bi+batchSize).map(function(r){
+      if(!useBalance){ var rc=Object.assign({},r); delete rc.balance; return rc; }
+      return r;
+    });
+    var { error } = await supabase.from('products').upsert(batch, { onConflict: 'barcode' });
+
+    // ถ้า error เกี่ยวกับ balance column → ลองใหม่โดยตัด balance ออก
+    if(error && error.message && error.message.toLowerCase().includes('balance')){
+      useBalance = false;
+      statusEl.textContent = '⚠️ ไม่มีคอลัมน์ balance ใน DB — นำเข้าโดยไม่มียอดคงเหลือ';
+      var batchNobal = batch.map(function(r){ var rc=Object.assign({},r); delete rc.balance; return rc; });
+      var res2 = await supabase.from('products').upsert(batchNobal, { onConflict: 'barcode' });
+      if(res2.error){ errMsg = res2.error.message; break; }
+      batchNobal.forEach(function(r){ prods[r.barcode] = r; });
+    } else if(error){
+      errMsg = error.message; break;
+    } else {
+      batch.forEach(function(r){ prods[r.barcode] = r; });
+    }
+
+    done += batch.length;
+    if(!errMsg) statusEl.textContent = 'กำลังนำเข้า '+done+'/'+rows.length+'...';
+  }
+
+  setSyncDot(errMsg ? 'off' : 'on');
+  if(errMsg){ statusEl.textContent = '❌ '+errMsg; return; }
+  renderProds();
+  var note = useBalance ? '' : ' (ไม่มียอดคงเหลือ — รัน Migration SQL เพื่อเปิดใช้)';
+  statusEl.textContent = '✅ นำเข้าสำเร็จ '+rows.length+' รายการ'+note;
+  toast('✅ นำเข้า '+rows.length+' รายการแล้ว');
+  if(input) input.value = '';
+}
+
 function importCSV(input){
   var file = input.files[0]; if(!file) return;
   var reader = new FileReader();
   reader.onload = async function(e){
-    var lines = e.target.result.split('\n').filter(function(l){ return l.trim(); });
-    var rows = [];
-    lines.slice(1).forEach(function(line){
-      var cols = line.split(',').map(function(c){ return c.replace(/^"|"$/g,'').trim(); });
-      if(cols[0] && cols[1]){
-        rows.push({ barcode: cols[0], name: cols[1], category: cols[2]||'ทั่วไป', unit: cols[3]||'ชิ้น', created_by: currentUser.id });
+    var text = e.target.result;
+    // parse CSV respecting quoted fields (handles commas/newlines inside quotes)
+    var lines = [];
+    var cur = '', inQ = false;
+    for(var ci=0; ci<text.length; ci++){
+      var ch = text[ci];
+      if(ch==='"'){ inQ=!inQ; cur+=ch; }
+      else if(ch==='\n' && !inQ){ lines.push(cur); cur=''; }
+      else { cur+=ch; }
+    }
+    if(cur.trim()) lines.push(cur);
+
+    function parseCols(line){
+      var cols=[], f='', q=false;
+      for(var i=0;i<line.length;i++){
+        var c=line[i];
+        if(c==='"'){q=!q;}
+        else if(c===',' && !q){cols.push(f.replace(/^"|"$/g,'').trim());f='';}
+        else{f+=c;}
       }
-    });
+      cols.push(f.replace(/^"|"$/g,'').trim());
+      return cols;
+    }
+
+    // detect format: Template_Data.csv has header rows with "Barcode","Code","Description"
+    // skip rows until we hit real data (col0 or col1 looks like a product code / barcode)
+    var isHeaderCol = function(v){ return !v || /^(barcode|code|description|uom|a\/c|price|balance|รหัส|รายการ|หน่วย|คงเหลือ|ราคา)/i.test(v); };
+
+    var rows = [];
+    var skipped = 0;
+    for(var li=0; li<lines.length; li++){
+      var line = lines[li].trim(); if(!line) continue;
+      var cols = parseCols(line);
+      // skip header/title rows
+      if(isHeaderCol(cols[0]) && isHeaderCol(cols[1])){ skipped++; continue; }
+
+      // --- detect column layout ---
+      // Layout A (Template_Data.csv): col0=Barcode, col1=Code, col2=Name, col3=UOM, col4=Balance, col5=Price
+      // Layout B (our old format):    col0=Barcode, col1=Code, col2=Name, col3=UOM, col4=Price,   col5=Balance
+      // Heuristic: if skipped >= 1 row → Template_Data format (layout A), else layout B
+      var bc      = cols[0]||'';
+      var code    = cols[1]||'';
+      var name    = cols[2]||'';
+      var unit    = cols[3]||'ชิ้น';
+      var balance, price;
+      if(skipped >= 1){
+        // Template_Data format
+        balance = parseFloat(cols[4])||0;
+        price   = parseFloat(cols[5])||0;
+      } else {
+        // old format
+        price   = parseFloat(cols[4])||0;
+        balance = parseFloat(cols[5])||0;
+      }
+
+      // if barcode empty → use product_code as barcode
+      if(!bc && code) bc = code;
+      if(!bc || !name) continue; // need at least barcode+name
+
+      rows.push({ barcode: bc, product_code: code, name: name, unit: unit||'ชิ้น', price: price, balance: balance, created_by: currentUser.id });
+    }
+
     if(!rows.length){ toast('⚠️ ไม่พบข้อมูลในไฟล์'); return; }
-    setSyncDot('syncing');
-    var { error } = await supabase.from('products').upsert(rows, { onConflict: 'barcode' });
-    setSyncDot(error ? 'off' : 'on');
-    if(error){ toast('❌ นำเข้าไม่ได้: '+error.message); return; }
-    rows.forEach(function(r){ prods[r.barcode] = r; });
-    renderProds(); buildCatList();
-    toast('✅ นำเข้า '+rows.length+' รายการแล้ว');
-    input.value = '';
+    // Deduplicate by barcode
+    var seen = {}, deduped = [];
+    rows.forEach(function(r){ seen[r.barcode] = r; });
+    deduped = Object.values(seen);
+    upsertProducts(deduped, input);
   };
   reader.readAsText(file, 'UTF-8');
 }
