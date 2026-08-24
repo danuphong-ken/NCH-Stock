@@ -93,6 +93,27 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 .rpt-table th{background:#f5eeff;color:#6c3483;padding:8px;text-align:left;font-weight:600}
 .rpt-table td{padding:7px 8px;border-bottom:1px solid #f0e8ff}
 .rpt-total{font-weight:700;background:#fdf8ff}
+/* ─── PRINT (handled via popup window) ─── */
+/* ─── SEARCH DROPDOWN ─── */
+.sdrop-item{padding:9px 14px;cursor:pointer;border-bottom:1px solid #f0e8ff;transition:background .1s}
+.sdrop-item:last-child{border-bottom:none}
+.sdrop-item:hover{background:#f5eeff}
+/* ─── CASH TABLE ─── */
+.cash-table{width:100%;border-collapse:collapse;font-size:14px}
+.cash-table thead th{background:#f5eeff;color:#6c3483;padding:10px 12px;font-weight:700;font-size:13px;border-bottom:2px solid #e0d0f0}
+.cash-table tbody tr{border-bottom:1px solid #f0e8ff}
+.cash-table tbody tr:nth-child(even){background:#fafafa}
+.cash-table tbody tr.coin-row{background:#fffdf0}
+.cash-table tbody td{padding:8px 12px;vertical-align:middle}
+.cash-denom{font-weight:600;color:#1a1a2e}
+.cash-denom small{font-size:11px;color:#888;font-weight:400;display:block}
+.cash-qty{width:100%;padding:6px 8px;border:1.5px solid #ddd;border-radius:8px;font-size:16px;font-weight:700;text-align:center;color:#6c3483;outline:none;background:#fff}
+.cash-qty:focus{border-color:#6c3483}
+.cash-subtotal{font-weight:700;color:#1a1a2e;text-align:right;font-size:14px}
+.cash-subtotal.has-val{color:#27ae60}
+.cash-grand{background:#6c3483!important;color:#fff}
+.cash-grand td{padding:12px;font-weight:700;font-size:16px}
+.cash-section-hd td{background:#f0e8ff;color:#6c3483;font-weight:700;font-size:12px;padding:6px 12px;letter-spacing:.5px}
 /* ─── HISTORY ─── */
 .hist-item{background:#fff;border-radius:12px;margin-bottom:10px;box-shadow:0 1px 6px rgba(0,0,0,.07);overflow:hidden}
 .hist-hd{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;border-left:4px solid #6c3483}
@@ -196,6 +217,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
     <div class="tab" onclick="go('products')" id="tab-products">🏷️ สินค้า</div>
     <div class="tab" onclick="go('report')" id="tab-report">📊 รายงาน</div>
     <div class="tab" onclick="go('history')" id="tab-history">📋 ประวัติ</div>
+    <div class="tab" onclick="go('cash')" id="tab-cash">💵 เงินสด</div>
     <div class="tab" onclick="go('settings')" id="tab-settings">⚙️ ตั้งค่า</div>
   </div>
 
@@ -232,9 +254,15 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <h3>🔍 แสกน Barcode</h3>
         <div class="no-session-warn" id="no-sess-warn">กรุณา <strong>เริ่มรอบการนับ</strong> ก่อนแสกน</div>
         <div id="scan-controls" style="display:none">
-          <div class="inp-group" style="margin-bottom:10px">
+          <div class="inp-group" style="margin-bottom:8px">
             <input type="number" id="qty-input" value="1" min="1" style="max-width:80px;text-align:center;font-size:20px;font-weight:700">
             <input type="text" id="bc-manual" placeholder="พิมพ์/แสกน Barcode แล้วกด Enter" onkeydown="if(event.key==='Enter')manualCount()">
+          </div>
+          <!-- ── Product Search ── -->
+          <div style="position:relative;margin-bottom:10px">
+            <input type="text" id="prod-search" placeholder="🔍 ค้นหาชื่อสินค้า หรือรหัส..." oninput="searchProds(this.value)" onkeydown="searchNavKey(event)" autocomplete="off"
+              style="width:100%;padding:10px 14px;border:1.5px solid #b39ddb;border-radius:10px;font-size:14px;outline:none;background:#fff">
+            <div id="prod-search-drop" style="display:none;position:absolute;left:0;right:0;top:100%;background:#fff;border:1.5px solid #b39ddb;border-top:none;border-radius:0 0 10px 10px;max-height:220px;overflow-y:auto;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,.12)"></div>
           </div>
           <div class="btn-row">
             <button class="btn btn-primary" onclick="document.getElementById('photo-count-once').click()">📷 ถ่ายรูป 1 ครั้ง</button>
@@ -313,11 +341,14 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <input type="date" id="rpt-date" onchange="loadReport()">
         <button class="btn btn-outline btn-sm" onclick="exportCSV()">⬇️ CSV</button>
         <button class="btn btn-success btn-sm" onclick="exportExcel()">📥 Excel</button>
+        <button class="btn btn-outline btn-sm" onclick="printStockReport()">🖨️ PDF</button>
       </div>
 
       <div id="report-list">
         <div class="empty"><div class="em-icon">📊</div><p>เลือกสาขา/วันที่เพื่อดูรายงาน</p></div>
       </div>
+      <div style="margin-top:14px;font-size:13px;font-weight:700;color:#6c3483;margin-bottom:8px" id="cash-rpt-hd" style="display:none">💵 รายงานเงินสด</div>
+      <div id="cash-report-list"></div>
     </div>
 
     <!-- ══════════ HISTORY PAGE ══════════ -->
@@ -327,6 +358,98 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <p style="font-size:13px;color:#888;margin-top:4px">รายการ Session ทั้งหมด — กดที่รายการเพื่อดูรายงานหรือ Export Excel</p>
       </div>
       <div id="history-list"><div class="empty"><div class="em-icon">📋</div><p>กำลังโหลด...</p></div></div>
+
+      <div class="card" style="margin-top:16px;margin-bottom:12px">
+        <h3>💵 ประวัติการตรวจนับเงินสด</h3>
+      </div>
+      <div id="cash-history-list"><div class="empty"><div class="em-icon">💵</div><p>กำลังโหลด...</p></div></div>
+    </div>
+
+    <!-- ══════════ CASH PAGE ══════════ -->
+    <div class="page" id="page-cash">
+      <!-- Header Info -->
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <h3>💵 ตรวจนับเงินสดย่อย</h3>
+          <button class="btn btn-danger btn-sm" onclick="clearCash()">🗑️ ล้าง</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div>
+            <label class="lbl">สาขา</label>
+            <select id="cash-branch" class="linp" style="margin-bottom:0;padding:9px 12px;font-size:14px" onchange="calcCash()">
+              <option value="">-- เลือกสาขา --</option>
+            </select>
+          </div>
+          <div>
+            <label class="lbl">วันที่</label>
+            <input type="date" id="cash-date" class="linp" style="margin-bottom:0;padding:9px 12px;font-size:14px" onchange="calcCash()">
+          </div>
+          <div>
+            <label class="lbl">เวลา</label>
+            <input type="time" id="cash-time" class="linp" style="margin-bottom:0;padding:9px 12px;font-size:14px" onchange="calcCash()">
+          </div>
+          <div>
+            <label class="lbl">ผู้ตรวจนับ</label>
+            <input type="text" id="cash-counter" class="linp" style="margin-bottom:0;padding:9px 12px;font-size:14px" placeholder="ชื่อผู้ตรวจนับ" onchange="calcCash()">
+          </div>
+        </div>
+      </div>
+
+      <!-- Denomination Table -->
+      <div class="card" style="padding:0;overflow:hidden;margin-bottom:12px">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>ธนบัตร / เหรียญ</th>
+              <th style="text-align:center">จำนวน (ใบ/ชิ้น)</th>
+              <th style="text-align:right">รวมเป็นเงิน (บาท)</th>
+            </tr>
+          </thead>
+          <tbody id="cash-tbody"></tbody>
+          <tfoot>
+            <tr class="cash-grand">
+              <td colspan="2">💰 ยอดรวมทั้งหมด</td>
+              <td style="text-align:right" id="cash-grand-total">0.00</td>
+            </tr>
+            <tr style="background:#fff3cd">
+              <td style="padding:10px 12px;font-weight:600;color:#856404">หักเงินทอน</td>
+              <td style="padding:8px 12px;text-align:center">
+                <input type="number" id="cash-deduct" class="cash-qty" style="max-width:140px;margin:auto" min="0" value="1000" oninput="calcCash()" inputmode="numeric">
+              </td>
+              <td style="padding:10px 12px;text-align:right;font-weight:700;color:#856404" id="cash-deduct-show">1,000.00</td>
+            </tr>
+            <tr style="background:#d5f5e3">
+              <td colspan="2" style="padding:12px;font-weight:700;color:#1e8449;font-size:15px">📊 ผลต่าง (ยอดรวม − หักเงินทอน)</td>
+              <td style="padding:12px;text-align:right;font-weight:700;font-size:16px" id="cash-diff">0.00</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <!-- Signature Section -->
+      <div class="card" style="margin-bottom:12px">
+        <h3 style="margin-bottom:12px">✍️ ลายเซ็นต์</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div style="text-align:center">
+            <p style="font-size:13px;color:#555;margin-bottom:4px">ผู้ถือเงินสดย่อย คนที่ 1</p>
+            <div style="border-bottom:2px solid #6c3483;margin:32px 8px 6px"></div>
+            <input type="text" id="cash-sign1" class="linp" style="text-align:center;margin-bottom:0;font-size:13px" placeholder="ชื่อ - นามสกุล">
+          </div>
+          <div style="text-align:center">
+            <p style="font-size:13px;color:#555;margin-bottom:4px">ผู้ถือเงินสดย่อย คนที่ 2</p>
+            <div style="border-bottom:2px solid #6c3483;margin:32px 8px 6px"></div>
+            <input type="text" id="cash-sign2" class="linp" style="text-align:center;margin-bottom:0;font-size:13px" placeholder="ชื่อ - นามสกุล">
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="saveCashCount()">💾 บันทึก</button>
+        <button class="btn btn-success" onclick="exportCashExcel()">📥 Excel</button>
+        <button class="btn btn-outline" onclick="exportCashCSV()">⬇️ CSV</button>
+        <button class="btn btn-outline" onclick="printCashReport()">🖨️ PDF</button>
+      </div>
+      <div id="cash-save-status" style="font-size:13px;color:#27ae60;margin-top:8px;min-height:18px"></div>
     </div>
 
     <!-- ══════════ SETTINGS PAGE ══════════ -->
@@ -512,6 +635,7 @@ function go(page){
   document.getElementById('tab-'+page).classList.add('active');
   if(page==='report') loadReport();
   if(page==='history') loadHistory();
+  if(page==='cash'){ initCash(); calcCash(); }
   if(page==='products') renderProds();
 }
 
@@ -986,6 +1110,8 @@ async function loadReport(){
 
   // store for export
   window._rptData = data;
+  // โหลดข้อมูลเงินสดในวันเดียวกัน/สาขาเดียวกัน
+  loadCashReport();
 }
 
 function toggleRpt(i){
@@ -1397,6 +1523,274 @@ function esc(s){
 }
 
 // ═══════════════════════════════════════
+//  PRODUCT SEARCH (Count Tab)
+// ═══════════════════════════════════════
+var _searchIdx = -1;
+
+function searchProds(q){
+  var drop = document.getElementById('prod-search-drop');
+  q = (q||'').trim();
+  if(!q){ drop.style.display='none'; _searchIdx=-1; return; }
+  var kw = q.toLowerCase();
+  var matches = Object.values(prods).filter(function(p){
+    return (p.name||'').toLowerCase().includes(kw)
+        || (p.product_code||'').toLowerCase().includes(kw)
+        || (p.barcode||'').includes(kw);
+  }).slice(0, 30);
+
+  if(!matches.length){ drop.style.display='none'; _searchIdx=-1; return; }
+  _searchIdx = -1;
+  drop.innerHTML = matches.map(function(p, i){
+    return '<div class="sdrop-item" data-i="'+i+'" onmousedown="pickProd(\''+esc(p.barcode)+'\')">'+
+      '<div style="font-weight:600;font-size:13px">'+esc(p.name)+'</div>'+
+      '<div style="font-size:11px;color:#888;font-family:monospace">'+esc(p.product_code)+' | '+esc(p.barcode)+'</div>'+
+    '</div>';
+  }).join('');
+  drop.style.display = 'block';
+  drop.setAttribute('data-matches', JSON.stringify(matches.map(function(p){ return p.barcode; })));
+}
+
+function searchNavKey(e){
+  var drop = document.getElementById('prod-search-drop');
+  if(drop.style.display==='none') return;
+  var items = drop.querySelectorAll('.sdrop-item');
+  if(!items.length) return;
+  if(e.key==='ArrowDown'){
+    e.preventDefault();
+    _searchIdx = Math.min(_searchIdx+1, items.length-1);
+    highlightSearch(items);
+  } else if(e.key==='ArrowUp'){
+    e.preventDefault();
+    _searchIdx = Math.max(_searchIdx-1, 0);
+    highlightSearch(items);
+  } else if(e.key==='Enter'){
+    if(_searchIdx >= 0 && items[_searchIdx]){
+      e.preventDefault();
+      var bc = JSON.parse(drop.getAttribute('data-matches')||'[]')[_searchIdx];
+      if(bc) pickProd(bc);
+    }
+  } else if(e.key==='Escape'){
+    drop.style.display='none';
+  }
+}
+
+function highlightSearch(items){
+  items.forEach(function(el, i){
+    el.style.background = (i===_searchIdx) ? '#f0e8ff' : '';
+  });
+  if(items[_searchIdx]) items[_searchIdx].scrollIntoView({block:'nearest'});
+}
+
+function pickProd(bc){
+  var drop = document.getElementById('prod-search-drop');
+  drop.style.display = 'none';
+  var searchEl = document.getElementById('prod-search');
+  var p = prods[bc];
+  if(searchEl) searchEl.value = '';
+  // ใส่ barcode ลงช่อง manual แล้วบันทึกทันที
+  var qty = parseInt(document.getElementById('qty-input').value) || 1;
+  addCount(bc, qty);
+}
+
+// ปิด dropdown เมื่อคลิกที่อื่น
+document.addEventListener('click', function(e){
+  var drop = document.getElementById('prod-search-drop');
+  if(drop && !drop.contains(e.target) && e.target.id !== 'prod-search'){
+    drop.style.display = 'none';
+  }
+});
+
+// ═══════════════════════════════════════
+//  CASH — ตรวจนับเงินสดย่อย
+// ═══════════════════════════════════════
+var CASH_DENOMS = [
+  { label:'1,000 บาท',  value:1000, type:'note' },
+  { label:'500 บาท',    value:500,  type:'note' },
+  { label:'100 บาท',    value:100,  type:'note' },
+  { label:'50 บาท',     value:50,   type:'note' },
+  { label:'20 บาท',     value:20,   type:'note' },
+  { label:'10 บาท',     value:10,   type:'coin' },
+  { label:'5 บาท',      value:5,    type:'coin' },
+  { label:'2 บาท',      value:2,    type:'coin' },
+  { label:'1 บาท',      value:1,    type:'coin' },
+  { label:'50 สตางค์',  value:0.50, type:'coin' },
+  { label:'25 สตางค์',  value:0.25, type:'coin' },
+];
+
+function initCash(){
+  // ตั้ง default วันที่ + เวลาปัจจุบัน
+  var now = new Date();
+  var dateEl = document.getElementById('cash-date');
+  var timeEl = document.getElementById('cash-time');
+  if(dateEl && !dateEl.value) dateEl.value = now.toISOString().slice(0,10);
+  if(timeEl && !timeEl.value) timeEl.value = now.toTimeString().slice(0,5);
+  // populate branch select
+  var brSel = document.getElementById('cash-branch');
+  if(brSel && brSel.options.length <= 1){
+    NCH.forEach(function(b){ var o=document.createElement('option'); o.value=o.textContent=b; brSel.appendChild(o); });
+  }
+  var tbody = document.getElementById('cash-tbody');
+  if(!tbody || tbody.children.length > 0) return;
+  var lastType = '';
+  CASH_DENOMS.forEach(function(d, i){
+    if(d.type !== lastType){
+      lastType = d.type;
+      var sep = document.createElement('tr');
+      sep.className = 'cash-section-hd';
+      sep.innerHTML = '<td colspan="3">'+(d.type==='note' ? '🏦 ธนบัตร' : '🪙 เหรียญ')+'</td>';
+      tbody.appendChild(sep);
+    }
+    var tr = document.createElement('tr');
+    if(d.type==='coin') tr.className='coin-row';
+    tr.innerHTML =
+      '<td><span class="cash-denom">'+esc(d.label)+'</span></td>'+
+      '<td style="text-align:center"><input class="cash-qty" type="number" min="0" value="" placeholder="0" id="cq-'+i+'" oninput="calcCash()" onkeydown="cashNav(event,'+i+')" inputmode="numeric"></td>'+
+      '<td><span class="cash-subtotal" id="cs-'+i+'">—</span></td>';
+    tbody.appendChild(tr);
+  });
+}
+
+function calcCash(){
+  var grand = 0;
+  CASH_DENOMS.forEach(function(d, i){
+    var inp = document.getElementById('cq-'+i);
+    var el  = document.getElementById('cs-'+i);
+    if(!inp || !el) return;
+    var qty = parseFloat(inp.value) || 0;
+    var sub = qty * d.value;
+    grand += sub;
+    if(qty > 0){
+      el.textContent = sub.toLocaleString('th-TH', {minimumFractionDigits:2, maximumFractionDigits:2});
+      el.className = 'cash-subtotal has-val';
+    } else {
+      el.textContent = '—';
+      el.className = 'cash-subtotal';
+    }
+  });
+  var fmt = function(n){ return n.toLocaleString('th-TH', {minimumFractionDigits:2, maximumFractionDigits:2}); };
+  var gt = document.getElementById('cash-grand-total');
+  if(gt) gt.textContent = fmt(grand)+' บาท';
+  // หักเงินทอน
+  var deductInp = document.getElementById('cash-deduct');
+  var deduct = parseFloat((deductInp&&deductInp.value)||0) || 0;
+  var deductShow = document.getElementById('cash-deduct-show');
+  if(deductShow) deductShow.textContent = fmt(deduct);
+  // ผลต่าง
+  var diff = grand - deduct;
+  var diffEl = document.getElementById('cash-diff');
+  if(diffEl){
+    diffEl.textContent = fmt(diff)+' บาท';
+    diffEl.style.color = diff < 0 ? '#e74c3c' : diff > 0 ? '#1e8449' : '#555';
+  }
+}
+
+function cashNav(e, i){
+  // Enter หรือ ArrowDown → ไปช่องถัดไป
+  if(e.key==='Enter'||e.key==='ArrowDown'){
+    e.preventDefault();
+    var next = document.getElementById('cq-'+(i+1));
+    if(next) next.focus();
+  }
+  if(e.key==='ArrowUp'){
+    e.preventDefault();
+    var prev = document.getElementById('cq-'+(i-1));
+    if(prev) prev.focus();
+  }
+}
+
+function clearCash(){
+  if(!confirm('ล้างข้อมูลทั้งหมด?')) return;
+  CASH_DENOMS.forEach(function(d, i){
+    var inp = document.getElementById('cq-'+i);
+    if(inp) inp.value = '';
+  });
+  calcCash();
+}
+
+function getCashData(){
+  return CASH_DENOMS.map(function(d, i){
+    var inp = document.getElementById('cq-'+i);
+    var qty = parseFloat((inp&&inp.value)||0) || 0;
+    return { label: d.label, value: d.value, qty: qty, subtotal: qty * d.value };
+  });
+}
+
+function getCashMeta(){
+  return {
+    branch:  (document.getElementById('cash-branch')||{}).value || '',
+    date:    (document.getElementById('cash-date')||{}).value || '',
+    time:    (document.getElementById('cash-time')||{}).value || '',
+    counter: (document.getElementById('cash-counter')||{}).value || '',
+    sign1:   (document.getElementById('cash-sign1')||{}).value || '',
+    sign2:   (document.getElementById('cash-sign2')||{}).value || '',
+    deduct:  parseFloat(((document.getElementById('cash-deduct')||{}).value)||0)||0
+  };
+}
+
+function exportCashExcel(){
+  if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
+  var rows = getCashData();
+  var m = getCashMeta();
+  var grand = rows.reduce(function(a,r){ return a+r.subtotal; }, 0);
+  var diff = grand - m.deduct;
+  var wsData = [
+    ['ใบตรวจนับเงินสดย่อย','',''],
+    ['สาขา: '+m.branch,'วันที่: '+m.date,'เวลา: '+m.time],
+    ['ผู้ตรวจนับ: '+m.counter,'',''],
+    [],
+    ['ธนบัตร / เหรียญ','จำนวน (ใบ/ชิ้น)','รวมเป็นเงิน (บาท)']
+  ];
+  rows.forEach(function(r){
+    wsData.push([r.label, r.qty||'', r.subtotal||'']);
+  });
+  wsData.push([]);
+  wsData.push(['💰 ยอดรวมทั้งหมด','', grand]);
+  wsData.push(['หักเงินทอน','', m.deduct]);
+  wsData.push(['📊 ผลต่าง','', diff]);
+  wsData.push([]);
+  wsData.push(['ลายเซ็นต์ ผู้ถือเงินสดย่อย คนที่ 1','','ลายเซ็นต์ ผู้ถือเงินสดย่อย คนที่ 2']);
+  wsData.push(['','','']);
+  wsData.push(['__________________________','','__________________________']);
+  wsData.push([m.sign1||'(ชื่อ)','',m.sign2||'(ชื่อ)']);
+  var ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws['!cols'] = [{wch:28},{wch:18},{wch:22}];
+  ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:2}},{s:{r:2,c:0},e:{r:2,c:2}}];
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'เงินสดย่อย');
+  var fname = 'NCH_Cash_'+(m.branch||'')+'_'+(m.date||new Date().toISOString().slice(0,10))+'.xlsx';
+  XLSX.writeFile(wb, fname);
+  toast('📥 '+fname);
+}
+
+function exportCashCSV(){
+  var rows = getCashData();
+  var m = getCashMeta();
+  var grand = rows.reduce(function(a,r){ return a+r.subtotal; }, 0);
+  var diff = grand - m.deduct;
+  var lines = [
+    '"ใบตรวจนับเงินสดย่อย"',
+    '"สาขา: '+m.branch+'","วันที่: '+m.date+'","เวลา: '+m.time+'"',
+    '"ผู้ตรวจนับ: '+m.counter+'"',
+    '',
+    '"ธนบัตร / เหรียญ","จำนวน","รวมเป็นเงิน (บาท)"'
+  ];
+  rows.forEach(function(r){
+    lines.push('"'+r.label+'","'+(r.qty||0)+'","'+(r.subtotal||0)+'"');
+  });
+  lines.push('"💰 ยอดรวมทั้งหมด","","'+grand+'"');
+  lines.push('"หักเงินทอน","","'+m.deduct+'"');
+  lines.push('"📊 ผลต่าง","","'+diff+'"');
+  lines.push('');
+  lines.push('"ผู้ถือเงินสดย่อย คนที่ 1","","ผู้ถือเงินสดย่อย คนที่ 2"');
+  lines.push('"'+m.sign1+'","","'+m.sign2+'"');
+  var blob = new Blob(['﻿'+lines.join('\r\n')], {type:'text/csv;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href=url;
+  a.download = 'NCH_Cash_'+(m.branch||'')+'_'+(m.date||new Date().toISOString().slice(0,10))+'.csv';
+  a.click(); URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════
 //  HISTORY — ดู Session ย้อนหลัง
 // ═══════════════════════════════════════
 var historyData = [];
@@ -1410,6 +1804,7 @@ async function loadHistory(){
   if(error){ el.innerHTML = '<div class="empty"><p>❌ '+esc(error.message)+'</p></div>'; return; }
   historyData = data || [];
   renderHistoryList();
+  loadCashHistory();
 }
 
 function renderHistoryList(){
@@ -1574,6 +1969,174 @@ function autoExportSession(session, items){
   if(!session || !items || !items.length) return;
   buildAndDownloadExcel(session, items);
 }
+
+// ═══════════════════════════════════════
+//  CASH → Supabase (save/load)
+// ═══════════════════════════════════════
+async function saveCashCount(){
+  var m = getCashMeta();
+  var rows = getCashData();
+  var grand = rows.reduce(function(a,r){ return a+r.subtotal; },0);
+  var diff  = grand - m.deduct;
+  var stEl  = document.getElementById('cash-save-status');
+  stEl.textContent = 'กำลังบันทึก...';
+  var payload = {
+    branch: m.branch, count_date: m.date||null, count_time: m.time,
+    counter_name: m.counter, denominations: rows,
+    grand_total: grand, deduct: m.deduct, difference: diff,
+    sign1: m.sign1, sign2: m.sign2, user_id: currentUser.id
+  };
+  var { error } = await supabase.from('cash_counts').insert(payload);
+  if(error){ stEl.style.color='#e74c3c'; stEl.textContent='❌ '+error.message; return; }
+  stEl.style.color='#27ae60'; stEl.textContent='✅ บันทึกสำเร็จ';
+  setTimeout(function(){ stEl.textContent=''; },3000);
+}
+
+async function loadCashHistory(){
+  var el = document.getElementById('cash-history-list');
+  if(!el) return;
+  el.innerHTML='<div class="empty"><div class="em-icon">⏳</div><p>กำลังโหลด...</p></div>';
+  var { data, error } = await supabase.from('cash_counts')
+    .select('*').order('created_at',{ascending:false});
+  if(error){ el.innerHTML='<div class="empty"><p>❌ '+esc(error.message)+'</p></div>'; return; }
+  if(!(data&&data.length)){ el.innerHTML='<div class="empty"><div class="em-icon">💵</div><p>ยังไม่มีประวัติ</p></div>'; return; }
+  el.innerHTML = data.map(function(c){
+    var fmt = function(n){ return (parseFloat(n)||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2}); };
+    var diffColor = (c.difference||0) < 0 ? '#e74c3c' : '#27ae60';
+    return '<div class="hist-item" style="margin-bottom:10px">'+
+      '<div class="hist-hd completed" style="cursor:default">'+
+        '<div>'+
+          '<div class="hist-title">'+esc(c.branch||'-')+' — '+esc(c.count_date||'-')+'  '+esc(c.count_time||'')+'</div>'+
+          '<div class="hist-sub">ผู้ตรวจนับ: '+esc(c.counter_name||'-')+' | ยอดรวม: '+fmt(c.grand_total)+' บาท</div>'+
+        '</div>'+
+        '<div style="text-align:right">'+
+          '<div style="font-size:13px;font-weight:700;color:'+diffColor+'">ผลต่าง: '+fmt(c.difference)+'</div>'+
+          '<button class="btn btn-success btn-sm" style="margin-top:4px" onclick=\'printCashById('+JSON.stringify(c)+')\'>🖨️ PDF</button>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+async function loadCashReport(){
+  var branch = document.getElementById('rpt-branch').value;
+  var date   = document.getElementById('rpt-date').value;
+  var hd     = document.getElementById('cash-rpt-hd');
+  var el     = document.getElementById('cash-report-list');
+  if(!el) return;
+  var q = supabase.from('cash_counts').select('*').order('created_at',{ascending:false});
+  if(branch) q = q.eq('branch', branch);
+  if(date)   q = q.eq('count_date', date);
+  var { data, error } = await q;
+  if(error||!(data&&data.length)){ if(hd) hd.style.display='none'; el.innerHTML=''; return; }
+  if(hd) hd.style.display='block';
+  var fmt = function(n){ return (parseFloat(n)||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2}); };
+  el.innerHTML = data.map(function(c){
+    var diffColor = (c.difference||0) < 0 ? '#e74c3c' : '#27ae60';
+    return '<div class="rpt-session" style="margin-bottom:10px">'+
+      '<div class="rpt-session-hd" style="cursor:default">'+
+        '<h4>💵 '+esc(c.branch||'-')+' | '+esc(c.count_date||'-')+' '+esc(c.count_time||'')+'</h4>'+
+        '<span style="font-weight:700;color:'+diffColor+'">ผลต่าง: '+fmt(c.difference)+' บาท</span>'+
+      '</div>'+
+      '<div style="padding:10px 12px;font-size:13px;display:flex;gap:20px;flex-wrap:wrap">'+
+        '<span>ยอดรวม: <strong>'+fmt(c.grand_total)+'</strong></span>'+
+        '<span>หักเงินทอน: <strong>'+fmt(c.deduct)+'</strong></span>'+
+        '<span>ผู้ตรวจนับ: <strong>'+esc(c.counter_name||'-')+'</strong></span>'+
+        '<button class="btn btn-outline btn-sm" onclick=\'printCashById('+JSON.stringify(c)+')\'>🖨️ PDF</button>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+// ═══════════════════════════════════════
+//  PDF PRINT
+// ═══════════════════════════════════════
+function printStockReport(){
+  var data = window._rptData;
+  if(!data||!data.length){ toast('⚠️ ไม่มีข้อมูล'); return; }
+  var agg = buildAggData();
+  var html = agg.map(function(g){
+    var s = g.session;
+    var thaiDate = (s.count_date||'').split('-').reverse().join('/');
+    var rows = g.items.map(function(i,idx){
+      var diff = i.quantity-(i.balance||0);
+      var dc   = diff<0?'color:#c0392b':diff>0?'color:#27ae60':'';
+      return '<tr><td>'+( idx+1)+'</td><td>'+esc(i.barcode)+'<br><small>'+esc(i.product_name)+'</small></td>'+
+        '<td>'+esc(i.product_code)+'</td><td style="text-align:right">'+esc(i.balance||0)+'</td>'+
+        '<td style="text-align:right">'+esc(i.quantity)+'</td>'+
+        '<td style="text-align:right;'+dc+'"><b>'+(diff>=0?'+':'')+diff+'</b></td></tr>';
+    }).join('');
+    var gBal=g.items.reduce(function(a,r){return a+(r.balance||0);},0);
+    var gQty=g.items.reduce(function(a,r){return a+r.quantity;},0);
+    return '<div class="print-title">ใบรายงานการตรวจนับสินค้า : Brand NCH</div>'+
+      '<div class="print-sub">Inventory Check List Report</div>'+
+      '<div class="print-meta"><span>ห้าง/สาขา: <b>'+esc(s.branch)+'</b></span><span>วันที่: <b>'+thaiDate+'</b></span><span>ผู้นับ: <b>'+esc(s.counter_name)+'</b></span></div>'+
+      '<table class="print-table"><thead><tr><th>ลำดับ</th><th>Barcode / ชื่อสินค้า</th><th>รหัส</th><th style="text-align:right">คงเหลือ</th><th style="text-align:right">นับจริง</th><th style="text-align:right">ผลต่าง</th></tr></thead><tbody>'+rows+
+      '<tr><td colspan="3"><b>รวม</b></td><td style="text-align:right"><b>'+gBal+'</b></td><td style="text-align:right"><b>'+gQty+'</b></td><td style="text-align:right"><b>'+(gQty-gBal)+'</b></td></tr></tbody></table>'+
+      '<div class="print-sign"><div class="print-sign-box"><div class="print-sign-line"></div><div>หัวหน้าเขต / Area Manager</div></div>'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย / Sales</div></div>'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>Loss Stock</div></div>'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ตรวจสอบ บัญชีสต็อค</div></div></div>';
+  }).join('<hr style="margin:24px 0">');
+  openPrintWindow(html);
+}
+
+function printCashReport(){
+  var m = getCashMeta();
+  var rows = getCashData();
+  var grand = rows.reduce(function(a,r){return a+r.subtotal;},0);
+  var diff  = grand - m.deduct;
+  doPrintCash(m, rows, grand, diff);
+}
+
+function printCashById(c){
+  var m = { branch:c.branch, date:c.count_date, time:c.count_time,
+    counter:c.counter_name, sign1:c.sign1, sign2:c.sign2, deduct:c.deduct };
+  doPrintCash(m, c.denominations||[], c.grand_total, c.difference);
+}
+
+function doPrintCash(m, rows, grand, diff){
+  var fmt = function(n){ return (parseFloat(n)||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2}); };
+  var diffColor = diff<0?'color:#c0392b':'color:#27ae60';
+  var trs = rows.filter(function(r){return r.qty>0;}).map(function(r){
+    return '<tr><td>'+esc(r.label)+'</td><td style="text-align:center">'+r.qty+'</td><td style="text-align:right">'+fmt(r.subtotal)+'</td></tr>';
+  }).join('');
+  var html = '<div class="print-title">ใบตรวจนับเงินสดย่อย</div>'+
+    '<div class="print-meta"><span>สาขา: <b>'+esc(m.branch||'-')+'</b></span><span>วันที่: <b>'+esc(m.date||'-')+'</b>  เวลา: <b>'+esc(m.time||'-')+'</b></span><span>ผู้ตรวจนับ: <b>'+esc(m.counter||'-')+'</b></span></div>'+
+    '<table class="print-table"><thead><tr><th>ธนบัตร / เหรียญ</th><th style="text-align:center">จำนวน</th><th style="text-align:right">รวม (บาท)</th></tr></thead><tbody>'+trs+'</tbody></table>'+
+    '<div class="print-summary"><div>ยอดรวมทั้งหมด: <b>'+fmt(grand)+' บาท</b></div>'+
+    '<div>หักเงินทอน: <b>'+fmt(m.deduct)+' บาท</b></div>'+
+    '<div style="font-size:14pt;'+diffColor+'">ผลต่าง: <b>'+fmt(diff)+' บาท</b></div></div>'+
+    '<div class="print-sign">'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ถือเงินสดย่อย คนที่ 1</div><div style="margin-top:4px;font-size:10pt">'+esc(m.sign1||'')+'</div></div>'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ถือเงินสดย่อย คนที่ 2</div><div style="margin-top:4px;font-size:10pt">'+esc(m.sign2||'')+'</div></div>'+
+    '</div>';
+  openPrintWindow(html);
+}
+
+function openPrintWindow(bodyHtml){
+  var css = '<style>'+
+    'body{font-family:"Sarabun",sans-serif;font-size:12pt;color:#000;margin:20px}'+
+    '.print-title{font-size:16pt;font-weight:700;text-align:center;margin-bottom:4px}'+
+    '.print-sub{text-align:center;font-size:11pt;margin-bottom:10px}'+
+    '.print-meta{display:flex;justify-content:space-between;margin-bottom:12px;font-size:11pt;flex-wrap:wrap;gap:6px}'+
+    'table{width:100%;border-collapse:collapse;font-size:11pt;margin-bottom:12px}'+
+    'th{background:#ddd;padding:6px 8px;font-weight:700;border:1px solid #999;text-align:left}'+
+    'td{padding:5px 8px;border:1px solid #ccc}'+
+    '.print-summary{text-align:right;font-size:12pt;margin-top:8px}'+
+    '.print-sign{display:flex;justify-content:space-around;margin-top:48px;flex-wrap:wrap;gap:20px}'+
+    '.print-sign-box{text-align:center;min-width:160px}'+
+    '.print-sign-line{border-top:1px solid #333;margin:36px 0 6px}'+
+    'hr{border:none;border-top:1px dashed #aaa;margin:24px 0}'+
+    '</style>';
+  var win = window.open('','_blank','width=900,height=700');
+  if(!win){ toast('⚠️ กรุณาอนุญาต popup ในบราวเซอร์แล้วลองใหม่'); return; }
+  win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NCH Report</title>'+css+'</head><body>'+bodyHtml+'</body></html>');
+  win.document.close();
+  win.focus();
+  setTimeout(function(){ win.print(); }, 400);
+}
+
 
 </script>
 </body>
