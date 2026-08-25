@@ -466,6 +466,14 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         </div>
       </div>
 
+      <!-- หมายเหตุ -->
+      <div class="card" style="margin-bottom:12px">
+        <h3 style="margin-bottom:10px">📝 หมายเหตุ</h3>
+        <textarea id="cash-remark" rows="4" placeholder="กรอกหมายเหตุเพิ่มเติม (ถ้ามี)"
+          style="width:100%;padding:10px 12px;border:2px solid #ddd;border-radius:10px;font-size:14px;font-family:'Sarabun',sans-serif;resize:vertical;outline:none;transition:border .2s"
+          onfocus="this.style.borderColor='#6c3483'" onblur="this.style.borderColor='#ddd'"></textarea>
+      </div>
+
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" onclick="saveCashCount()">💾 บันทึก</button>
         <button class="btn btn-success" onclick="exportCashExcel()">📥 Excel</button>
@@ -1078,13 +1086,16 @@ async function loadReport(){
   var date   = document.getElementById('rpt-date').value;
 
   setSyncDot('syncing');
-  var q = supabase.from('count_sessions').select('*, count_items(*)').eq('status','completed').order('count_date',{ascending:false});
+  // ดึงทั้ง completed และ in_progress
+  var q = supabase.from('count_sessions').select('*, count_items(*)').order('count_date',{ascending:false});
   if(branch) q = q.eq('branch', branch);
   if(date)   q = q.eq('count_date', date);
 
   var { data, error } = await q;
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ '+error.message); return; }
+
+  var totalProds = Object.keys(prods).length;
 
   // stats
   var totalSess = (data||[]).length;
@@ -1093,7 +1104,7 @@ async function loadReport(){
     (s.count_items||[]).forEach(function(i){ skuSet.add(i.barcode); totalQty += i.quantity; });
   });
   document.getElementById('s-sessions').textContent = totalSess;
-  document.getElementById('s-skus').textContent = skuSet.size;
+  document.getElementById('s-skus').textContent = skuSet.size + (totalProds?' / '+totalProds:'');
   document.getElementById('s-total').textContent = totalQty.toLocaleString();
 
   var el = document.getElementById('report-list');
@@ -1101,7 +1112,9 @@ async function loadReport(){
 
   el.innerHTML = (data||[]).map(function(s, si){
     var items = s.count_items || [];
-    // Aggregate by barcode
+    var isDone = s.status === 'completed';
+
+    // ─── Aggregate counted items ───
     var aggMap = {};
     items.forEach(function(i){
       var key = i.barcode || i.product_name || '?';
@@ -1109,27 +1122,82 @@ async function loadReport(){
         var prod = prods[i.barcode] || {};
         aggMap[key] = {
           barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
-          product_name: i.product_name||'', unit: i.unit||prod.unit||'ชิ้น',
+          product_name: i.product_name||prod.name||'', unit: i.unit||prod.unit||'ชิ้น',
           quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0,
-          balance: parseFloat(prod.balance)||0
+          balance: parseFloat(prod.balance)||0, uncounted: false
         };
       }
       aggMap[key].quantity += i.quantity;
       aggMap[key].sold_qty += parseFloat(i.sold_qty)||0;
     });
-    var aggItems = Object.values(aggMap);
-    aggItems.sort(function(a,b){ return (a.product_code||'').localeCompare(b.product_code||''); });
 
-    var grandQty  = aggItems.reduce(function(a,i){ return a+i.quantity; }, 0);
-    var grandVal  = aggItems.reduce(function(a,i){ return a+(i.quantity*i.price); }, 0);
+    // ─── เพิ่มสินค้าที่ยังไม่ได้นับจาก Master Product ───
+    Object.values(prods).forEach(function(p){
+      var key = p.barcode;
+      if(!aggMap[key]){
+        aggMap[key] = {
+          barcode: p.barcode||'', product_code: p.product_code||'',
+          product_name: p.name||'', unit: p.unit||'ชิ้น',
+          quantity: 0, sold_qty: 0, price: parseFloat(p.price)||0,
+          balance: parseFloat(p.balance)||0, uncounted: true
+        };
+      }
+    });
+
+    var aggItems = Object.values(aggMap);
+    // เรียง: นับแล้วก่อน (product_code), ยังไม่นับทีหลัง
+    aggItems.sort(function(a,b){
+      if(a.uncounted !== b.uncounted) return a.uncounted ? 1 : -1;
+      return (a.product_code||'').localeCompare(b.product_code||'');
+    });
+
+    var countedItems   = aggItems.filter(function(i){ return !i.uncounted; });
+    var uncountedItems = aggItems.filter(function(i){ return i.uncounted; });
+    var grandQty  = countedItems.reduce(function(a,i){ return a+i.quantity; }, 0);
     var thaiDate  = s.count_date ? s.count_date.split('-').reverse().join('/') : '';
-    var now       = new Date(); var timeStr = now.getHours()+':'+(now.getMinutes()<10?'0':'')+now.getMinutes();
+    var pct = totalProds ? Math.round(countedItems.length/totalProds*100) : 0;
+
+    // Status badge
+    var statusBadge = isDone
+      ? '<span style="background:#d5f5e3;color:#1e8449;border-radius:12px;padding:3px 10px;font-size:12px;font-weight:700">✅ เสร็จแล้ว</span>'
+      : '<span style="background:#fef9e7;color:#e67e22;border-radius:12px;padding:3px 10px;font-size:12px;font-weight:700">🔄 กำลังนับ</span>';
+
+    // Progress bar
+    var progressBar = '<div style="margin:6px 0 2px;font-size:12px;color:#555">'+
+      'นับแล้ว <b>'+countedItems.length+'</b> / <b>'+totalProds+'</b> รายการ ('+pct+'%)</div>'+
+      '<div style="background:#e8e0f0;border-radius:6px;height:6px;overflow:hidden">'+
+      '<div style="background:'+(pct===100?'#27ae60':'#6c3483')+';width:'+pct+'%;height:100%;border-radius:6px;transition:width .3s"></div></div>';
+
+    var tableRows = aggItems.map(function(i, idx){
+      var diff    = (i.quantity + (i.sold_qty||0)) - i.balance;
+      var diffClr = diff < 0 ? '#e74c3c' : diff > 0 ? '#27ae60' : '#888';
+      var diffTxt = (diff > 0 ? '+' : '') + diff.toLocaleString();
+      var rowBg   = i.uncounted ? 'background:#fff8f0' : '';
+      var statusCell = i.uncounted
+        ? '<span style="background:#fdebd0;color:#e67e22;border-radius:8px;padding:1px 7px;font-size:11px">⬜ ยังไม่นับ</span>'
+        : '<span style="background:#d5f5e3;color:#1e8449;border-radius:8px;padding:1px 7px;font-size:11px">✅ นับแล้ว</span>';
+      return '<tr style="'+rowBg+'">'+
+        '<td style="text-align:center;color:#999">'+(idx+1)+'</td>'+
+        '<td style="font-family:monospace;font-size:12px">'+esc(i.barcode||'')+'<br>'+
+        '<span style="font-size:10px;color:#aaa">'+esc(i.product_name||'')+'</span></td>'+
+        '<td style="font-family:monospace;font-size:12px">'+esc(i.product_code||'')+'</td>'+
+        '<td style="text-align:center">'+statusCell+'</td>'+
+        '<td style="text-align:right">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
+        '<td style="text-align:right;font-weight:700;color:'+(i.uncounted?'#bbb':'#6c3483')+'">'+i.quantity.toLocaleString()+'</td>'+
+        '<td style="text-align:right;color:#e67e22">'+(i.sold_qty?i.sold_qty.toLocaleString():'—')+'</td>'+
+        '<td style="text-align:right;font-weight:700;color:'+(i.uncounted?'#bbb':diffClr)+'">'+diffTxt+'</td>'+
+        '</tr>';
+    }).join('');
 
     return '<div class="rpt-session" style="page-break-after:always">'+
       '<div class="rpt-session-hd" onclick="toggleRpt('+si+')" style="cursor:pointer">'+
-      '<div><h4 style="font-size:14px">📋 '+esc(s.branch)+'</h4>'+
-      '<span style="font-size:12px;color:#666">'+s.count_date+' | ผู้นับ: '+esc(s.counter_name)+'</span></div>'+
-      '<span style="font-size:13px;font-weight:700;color:#6c3483">'+grandQty.toLocaleString()+' ชิ้น ▾</span></div>'+
+      '<div style="flex:1">'+
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<h4 style="font-size:14px">📋 '+esc(s.branch)+'</h4>'+statusBadge+'</div>'+
+      '<span style="font-size:12px;color:#666">'+s.count_date+' | ผู้นับ: '+esc(s.counter_name)+'</span>'+
+      progressBar+'</div>'+
+      '<span style="font-size:13px;font-weight:700;color:#6c3483;white-space:nowrap;margin-left:8px">'+grandQty.toLocaleString()+' ชิ้น ▾</span>'+
+      '<button onclick="event.stopPropagation();printSession('+si+')" style="margin-left:10px;background:#6c3483;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:\'Sarabun\',sans-serif">🖨️ ปริ้น</button></div>'+
       '<div class="rpt-session-body" id="rpt-body-'+si+'">'+
       // NCH Report Header
       '<div style="text-align:center;margin-bottom:8px;padding:8px;background:#f9f5ff;border-radius:8px">'+
@@ -1137,76 +1205,69 @@ async function loadReport(){
       '<div style="font-size:12px;color:#666">Inventory Check List Report</div>'+
       '<div style="font-size:12px;margin-top:4px;display:flex;justify-content:center;gap:24px;flex-wrap:wrap">'+
       '<span>ห้าง/Department: <strong>'+esc(s.branch)+'</strong></span>'+
-      '<span>สาขา/Branch: <strong>'+esc(s.branch)+'</strong></span>'+
       '<span>วันที่/Date: <strong>'+thaiDate+'</strong></span>'+
       '<span>ผู้นับ: <strong>'+esc(s.counter_name)+'</strong></span>'+
+      '<span>สถานะ: <strong>'+(isDone?'เสร็จสิ้น':'กำลังนับ')+'</strong></span>'+
       '</div></div>'+
+      // Summary bar
+      '<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">'+
+      '<div style="flex:1;min-width:100px;background:#f0e8ff;border-radius:8px;padding:8px;text-align:center">'+
+      '<div style="font-size:11px;color:#888">นับแล้ว</div><div style="font-weight:700;color:#6c3483;font-size:18px">'+countedItems.length+'</div></div>'+
+      '<div style="flex:1;min-width:100px;background:#fff8f0;border-radius:8px;padding:8px;text-align:center">'+
+      '<div style="font-size:11px;color:#888">ยังไม่นับ</div><div style="font-weight:700;color:#e67e22;font-size:18px">'+uncountedItems.length+'</div></div>'+
+      '<div style="flex:1;min-width:100px;background:#fafafa;border-radius:8px;padding:8px;text-align:center">'+
+      '<div style="font-size:11px;color:#888">ทั้งหมด (Master)</div><div style="font-weight:700;color:#555;font-size:18px">'+totalProds+'</div></div>'+
+      '<div style="flex:1;min-width:100px;background:'+(pct===100?'#d5f5e3':'#fef9e7')+';border-radius:8px;padding:8px;text-align:center">'+
+      '<div style="font-size:11px;color:#888">ความครบถ้วน</div><div style="font-weight:700;color:'+(pct===100?'#27ae60':'#e67e22')+';font-size:18px">'+pct+'%</div></div>'+
+      '</div>'+
       // Table
       '<div style="overflow-x:auto">'+
-      '<table class="rpt-table" style="min-width:600px">'+
+      '<table class="rpt-table" style="min-width:640px">'+
       '<thead><tr>'+
       '<th style="text-align:center;width:36px">ลำดับ</th>'+
-      '<th>Barcode</th>'+
+      '<th>Barcode / ชื่อสินค้า</th>'+
       '<th>Item Number<br><small style="font-weight:400;color:#888">รหัสสินค้า</small></th>'+
-      '<th style="text-align:right">ยอดคงเหลือ<br><small style="font-weight:400;color:#888">Balance</small></th>'+
+      '<th style="text-align:center">สถานะนับ</th>'+
+      '<th style="text-align:right">คงเหลือ<br><small style="font-weight:400;color:#888">Balance</small></th>'+
       '<th style="text-align:right">นับจริง<br><small style="font-weight:400;color:#888">Count</small></th>'+
       '<th style="text-align:right">จำนวนขาย<br><small style="font-weight:400;color:#888">Sold</small></th>'+
       '<th style="text-align:right">ผลต่าง<br><small style="font-weight:400;color:#888">Diff</small></th>'+
-      '</tr></thead><tbody>'+
-      aggItems.map(function(i, idx){
-        var diff    = (i.quantity + (i.sold_qty||0)) - i.balance;
-        var diffClr = diff < 0 ? '#e74c3c' : diff > 0 ? '#27ae60' : '#888';
-        var diffTxt = (diff > 0 ? '+' : '') + diff.toLocaleString();
-        return '<tr>'+
-          '<td style="text-align:center;color:#999">'+(idx+1)+'</td>'+
-          '<td style="font-family:monospace;font-size:12px">'+esc(i.barcode||'')+'<br>'+
-          '<span style="font-size:10px;color:#aaa">'+esc(i.product_name||'')+'</span></td>'+
-          '<td style="font-family:monospace;font-size:12px">'+esc(i.product_code||'')+'</td>'+
-          '<td style="text-align:right">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
-          '<td style="text-align:right;font-weight:700;color:#6c3483">'+i.quantity.toLocaleString()+'</td>'+
-          '<td style="text-align:right;color:#e67e22">'+(i.sold_qty?i.sold_qty.toLocaleString():'—')+'</td>'+
-          '<td style="text-align:right;font-weight:700;color:'+diffClr+'">'+diffTxt+'</td>'+
-          '</tr>';
-      }).join('')+
+      '</tr></thead><tbody>'+tableRows+
       '</tbody><tfoot>'+
       '<tr class="rpt-total" style="background:#f0e8ff">'+
-      '<td colspan="3" style="text-align:right;font-weight:700">รวมทั้งหมด</td>'+
+      '<td colspan="4" style="text-align:right;font-weight:700">รวมทั้งหมด</td>'+
       '<td style="text-align:right;font-weight:700">'+aggItems.reduce(function(a,i){return a+(i.balance||0);},0).toLocaleString()+'</td>'+
       '<td style="text-align:right;font-weight:700;color:#6c3483">'+grandQty.toLocaleString()+'</td>'+
-      '<td style="text-align:right;color:#e67e22">'+aggItems.reduce(function(a,i){return a+(i.sold_qty||0);},0).toLocaleString()+'</td>'+
+      '<td style="text-align:right;color:#e67e22">'+countedItems.reduce(function(a,i){return a+(i.sold_qty||0);},0).toLocaleString()+'</td>'+
       (function(){
         var gBal=aggItems.reduce(function(a,i){return a+(i.balance||0);},0);
-        var gSold=aggItems.reduce(function(a,i){return a+(i.sold_qty||0);},0);
+        var gSold=countedItems.reduce(function(a,i){return a+(i.sold_qty||0);},0);
         var d=grandQty+gSold-gBal;
         return '<td style="text-align:right;font-weight:700;color:'+(d<0?'#e74c3c':d>0?'#27ae60':'#888')+'">'+(d>0?'+':'')+d.toLocaleString()+'</td>';
       })()+
       '</tr></tfoot>'+
       '</table></div>'+
-      // Signature Footer
-      '<div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:12px;color:#333">'+
-      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
-      '<div style="margin-bottom:32px">ลายเซ็น ผู้ตรวจนับ</div>'+
+      // Signature Footer (only for completed)
+      (isDone ? '<div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:12px;color:#333">'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px"><div style="margin-bottom:32px">ลายเซ็น ผู้ตรวจนับ</div>'+
       '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
       '<div style="color:#666">หัวหน้าเขต / Area Manager</div></div>'+
-      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
-      '<div style="margin-bottom:32px">ลายเซ็น พนักงานขาย</div>'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px"><div style="margin-bottom:32px">ลายเซ็น พนักงานขาย</div>'+
       '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
       '<div style="color:#666">พนักงานขาย / Sales</div></div>'+
-      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
-      '<div style="margin-bottom:32px">ลายเซ็น ผู้รับผิดชอบ</div>'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px"><div style="margin-bottom:32px">ลายเซ็น ผู้รับผิดชอบ</div>'+
       '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
       '<div style="color:#666">Loss Stock</div></div>'+
-      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px">'+
-      '<div style="margin-bottom:32px">ลายเซ็น ผู้ตรวจสอบ</div>'+
+      '<div style="border:1px solid #ddd;border-radius:8px;padding:12px"><div style="margin-bottom:32px">ลายเซ็น ผู้ตรวจสอบ</div>'+
       '<div style="border-top:1px solid #999;padding-top:4px">__________________________</div>'+
       '<div style="color:#666">ผู้ตรวจสอบ บัญชีสต็อค / Stock Auditor</div></div>'+
-      '</div>'+
+      '</div>' : '<div style="margin:12px 0;padding:10px 14px;background:#fef9e7;border-radius:8px;font-size:13px;color:#856404">'+
+      '⚠️ Session นี้ยังอยู่ระหว่างการนับ ลายเซ็นจะแสดงเมื่อจบรอบแล้ว</div>')+
       '</div></div>';
   }).join('');
 
   // store for export
   window._rptData = data;
-  // โหลดข้อมูลเงินสดในวันเดียวกัน/สาขาเดียวกัน
   loadCashReport();
 }
 
@@ -1868,7 +1929,8 @@ function getCashMeta(){
     counter: (document.getElementById('cash-counter')||{}).value || '',
     sign1:   (document.getElementById('cash-sign1')||{}).value || '',
     sign2:   (document.getElementById('cash-sign2')||{}).value || '',
-    deduct:  parseFloat(((document.getElementById('cash-deduct')||{}).value)||0)||0
+    deduct:  parseFloat(((document.getElementById('cash-deduct')||{}).value)||0)||0,
+    remark:  (document.getElementById('cash-remark')||{}).value || ''
   };
 }
 
@@ -1892,6 +1954,9 @@ function exportCashExcel(){
   wsData.push(['💰 ยอดรวมทั้งหมด','', grand]);
   wsData.push(['หักเงินทอน','', m.deduct]);
   wsData.push(['📊 ผลต่าง','', diff]);
+  wsData.push([]);
+  wsData.push(['หมายเหตุ / Remark','','']);
+  wsData.push([m.remark||'','','']);
   wsData.push([]);
   wsData.push(['ลายเซ็นต์ ผู้ถือเงินสดย่อย คนที่ 1','','ลายเซ็นต์ ผู้ถือเงินสดย่อย คนที่ 2']);
   wsData.push(['','','']);
@@ -2132,7 +2197,7 @@ async function saveCashCount(){
     branch: m.branch, count_date: m.date||null, count_time: m.time,
     counter_name: m.counter, denominations: rows,
     grand_total: grand, deduct: m.deduct, difference: diff,
-    sign1: m.sign1, sign2: m.sign2, user_id: currentUser.id
+    sign1: m.sign1, sign2: m.sign2, remark: m.remark||null, user_id: currentUser.id
   };
   var { error } = await supabase.from('cash_counts').insert(payload);
   if(error){ stEl.style.color='#e74c3c'; stEl.textContent='❌ '+error.message; return; }
@@ -2156,6 +2221,7 @@ async function loadCashHistory(){
         '<div>'+
           '<div class="hist-title">'+esc(c.branch||'-')+' — '+esc(c.count_date||'-')+'  '+esc(c.count_time||'')+'</div>'+
           '<div class="hist-sub">ผู้ตรวจนับ: '+esc(c.counter_name||'-')+' | ยอดรวม: '+fmt(c.grand_total)+' บาท</div>'+
+          (c.remark?'<div style="margin-top:4px;padding:6px 8px;background:#f9f5ff;border:1px solid #e0d0f0;border-radius:6px;font-size:12px;color:#555;white-space:pre-wrap">📝 '+esc(c.remark)+'</div>':'')+
         '</div>'+
         '<div style="text-align:right">'+
           '<div style="font-size:13px;font-weight:700;color:'+diffColor+'">ผลต่าง: '+fmt(c.difference)+'</div>'+
@@ -2232,6 +2298,122 @@ function printStockReport(){
   openPrintWindow(html);
 }
 
+function printSession(si){
+  var data = window._rptData;
+  if(!data||!data[si]){ toast('⚠️ ไม่มีข้อมูล'); return; }
+  var s = data[si];
+  var items = s.count_items || [];
+  var isDone = s.status === 'completed';
+  var thaiDate = (s.count_date||'').split('-').reverse().join('/');
+  var totalProds = Object.keys(prods).length;
+
+  // Build aggMap — counted + uncounted (same logic as loadReport)
+  var aggMap = {};
+  items.forEach(function(i){
+    var key = i.barcode || i.product_name || '?';
+    if(!aggMap[key]){
+      var prod = prods[i.barcode] || {};
+      aggMap[key] = {
+        barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
+        product_name: i.product_name||prod.name||'', unit: i.unit||prod.unit||'ชิ้น',
+        quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0,
+        balance: parseFloat(prod.balance)||0, uncounted: false
+      };
+    }
+    aggMap[key].quantity += i.quantity;
+    aggMap[key].sold_qty += parseFloat(i.sold_qty)||0;
+  });
+  Object.values(prods).forEach(function(p){
+    var key = p.barcode;
+    if(!aggMap[key]){
+      aggMap[key] = {
+        barcode: p.barcode||'', product_code: p.product_code||'',
+        product_name: p.name||'', unit: p.unit||'ชิ้น',
+        quantity: 0, sold_qty: 0, price: parseFloat(p.price)||0,
+        balance: parseFloat(p.balance)||0, uncounted: true
+      };
+    }
+  });
+  var aggItems = Object.values(aggMap);
+  aggItems.sort(function(a,b){
+    if(a.uncounted !== b.uncounted) return a.uncounted ? 1 : -1;
+    return (a.product_code||'').localeCompare(b.product_code||'');
+  });
+  var countedItems   = aggItems.filter(function(i){ return !i.uncounted; });
+  var uncountedItems = aggItems.filter(function(i){ return i.uncounted; });
+  var grandQty  = countedItems.reduce(function(a,i){ return a+i.quantity; },0);
+  var pct = totalProds ? Math.round(countedItems.length/totalProds*100) : 0;
+
+  var rows = aggItems.map(function(i, idx){
+    var sold = i.sold_qty||0;
+    var diff = (i.quantity + sold) - (i.balance||0);
+    var dc   = i.uncounted ? 'color:#bbb' : (diff<0?'color:#c0392b':diff>0?'color:#27ae60':'');
+    var rowStyle = i.uncounted ? 'background:#fff8f0' : '';
+    var statusTxt = i.uncounted ? '⬜ ยังไม่นับ' : '✅ นับแล้ว';
+    return '<tr style="'+rowStyle+'">'+
+      '<td style="text-align:center">'+(idx+1)+'</td>'+
+      '<td>'+esc(i.barcode)+'<br><small>'+esc(i.product_name)+'</small></td>'+
+      '<td>'+esc(i.product_code)+'</td>'+
+      '<td style="text-align:center">'+statusTxt+'</td>'+
+      '<td style="text-align:right">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
+      '<td style="text-align:right;color:'+(i.uncounted?'#bbb':'#6c3483')+'"><b>'+i.quantity.toLocaleString()+'</b></td>'+
+      '<td style="text-align:right;color:#e67e22">'+(sold||'—')+'</td>'+
+      '<td style="text-align:right;'+dc+'"><b>'+(i.uncounted?'—':(diff>=0?'+':'')+diff.toLocaleString())+'</b></td></tr>';
+  }).join('');
+
+  var gBal  = aggItems.reduce(function(a,r){ return a+(r.balance||0); },0);
+  var gSold = countedItems.reduce(function(a,r){ return a+(r.sold_qty||0); },0);
+  var gDiff = grandQty + gSold - gBal;
+
+  var html =
+    '<div class="print-title">ใบรายงานการตรวจนับสินค้า : Brand NCH</div>'+
+    '<div class="print-sub">Inventory Check List Report</div>'+
+    '<div class="print-meta">'+
+      '<span>ห้าง/สาขา: <b>'+esc(s.branch)+'</b></span>'+
+      '<span>วันที่: <b>'+thaiDate+'</b></span>'+
+      '<span>ผู้นับ: <b>'+esc(s.counter_name)+'</b></span>'+
+      '<span>สถานะ: <b>'+(isDone?'✅ เสร็จสิ้น':'🔄 กำลังนับ')+'</b></span>'+
+    '</div>'+
+    '<div style="margin-bottom:10px;font-size:11pt">'+
+      'นับแล้ว <b>'+countedItems.length+'</b> / <b>'+totalProds+'</b> รายการ ('+pct+'%)'+
+      (uncountedItems.length ? ' | ยังไม่นับ <b style="color:#c0392b">'+uncountedItems.length+'</b> รายการ' : '')+
+    '</div>'+
+    '<table class="print-table">'+
+      '<thead><tr>'+
+        '<th style="width:36px;text-align:center">ลำดับ</th>'+
+        '<th>Barcode / ชื่อสินค้า</th>'+
+        '<th>รหัสสินค้า</th>'+
+        '<th style="text-align:center">สถานะนับ</th>'+
+        '<th style="text-align:right">คงเหลือ</th>'+
+        '<th style="text-align:right">นับจริง</th>'+
+        '<th style="text-align:right">จำนวนขาย</th>'+
+        '<th style="text-align:right">ผลต่าง</th>'+
+      '</tr></thead>'+
+      '<tbody>'+rows+'</tbody>'+
+      '<tfoot><tr>'+
+        '<td colspan="4" style="text-align:right"><b>รวมทั้งหมด</b></td>'+
+        '<td style="text-align:right"><b>'+gBal.toLocaleString()+'</b></td>'+
+        '<td style="text-align:right;color:#6c3483"><b>'+grandQty.toLocaleString()+'</b></td>'+
+        '<td style="text-align:right;color:#e67e22"><b>'+gSold.toLocaleString()+'</b></td>'+
+        '<td style="text-align:right;'+(gDiff<0?'color:#c0392b':gDiff>0?'color:#27ae60':'')+
+          '"><b>'+(gDiff>=0?'+':'')+gDiff.toLocaleString()+'</b></td>'+
+      '</tr></tfoot>'+
+    '</table>'+
+    (isDone
+      ? '<div class="print-sign">'+
+          '<div class="print-sign-box"><div class="print-sign-line"></div><div>หัวหน้าเขต / Area Manager</div></div>'+
+          '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย / Sales</div></div>'+
+          '<div class="print-sign-box"><div class="print-sign-line"></div><div>Loss Stock</div></div>'+
+          '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ตรวจสอบ บัญชีสต็อค</div></div>'+
+        '</div>'
+      : '<div style="margin-top:20px;padding:10px 14px;background:#fef9e7;border:1px solid #f39c12;border-radius:8px;font-size:11pt">'+
+          '⚠️ Session นี้ยังอยู่ระหว่างการนับ ลายเซ็นจะแสดงเมื่อจบรอบแล้ว'+
+        '</div>'
+    );
+
+  openPrintWindow(html);
+}
+
 function printCashReport(){
   var m = getCashMeta();
   var rows = getCashData();
@@ -2242,7 +2424,7 @@ function printCashReport(){
 
 function printCashById(c){
   var m = { branch:c.branch, date:c.count_date, time:c.count_time,
-    counter:c.counter_name, sign1:c.sign1, sign2:c.sign2, deduct:c.deduct };
+    counter:c.counter_name, sign1:c.sign1, sign2:c.sign2, deduct:c.deduct, remark:c.remark||'' };
   doPrintCash(m, c.denominations||[], c.grand_total, c.difference);
 }
 
@@ -2258,6 +2440,11 @@ function doPrintCash(m, rows, grand, diff){
     '<div class="print-summary"><div>ยอดรวมทั้งหมด: <b>'+fmt(grand)+' บาท</b></div>'+
     '<div>หักเงินทอน: <b>'+fmt(m.deduct)+' บาท</b></div>'+
     '<div style="font-size:14pt;'+diffColor+'">ผลต่าง: <b>'+fmt(diff)+' บาท</b></div></div>'+
+    // หมายเหตุ box
+    '<div style="margin:16px 0;border:1.5px solid #999;border-radius:6px;padding:10px 14px;min-height:72px">'+
+      '<div style="font-size:11pt;font-weight:700;margin-bottom:6px">หมายเหตุ / Remark</div>'+
+      '<div style="font-size:11pt;white-space:pre-wrap;color:#333">'+esc(m.remark||'')+'</div>'+
+    '</div>'+
     '<div class="print-sign">'+
       '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ถือเงินสดย่อย คนที่ 1</div><div style="margin-top:4px;font-size:10pt">'+esc(m.sign1||'')+'</div></div>'+
       '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ถือเงินสดย่อย คนที่ 2</div><div style="margin-top:4px;font-size:10pt">'+esc(m.sign2||'')+'</div></div>'+
