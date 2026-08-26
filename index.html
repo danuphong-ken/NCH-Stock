@@ -96,6 +96,13 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 .sdrop-item{padding:9px 14px;cursor:pointer;border-bottom:1px solid #f0e8ff;transition:background .1s}
 .sdrop-item:last-child{border-bottom:none}
 .sdrop-item:hover{background:#f5eeff}
+/* ─── CAMERA SCAN ─── */
+#cam-modal{display:none;position:fixed;inset:0;z-index:9999;background:#000;flex-direction:column;align-items:center;justify-content:center;padding:16px}
+#cam-video{width:100%;max-width:480px;border-radius:10px;display:block}
+.cam-frame{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.cam-box{position:relative;width:72%;aspect-ratio:3.5/1;border:3px solid #9b59b6;border-radius:8px;overflow:hidden;box-shadow:0 0 0 9999px rgba(0,0,0,.6)}
+.cam-line{position:absolute;left:0;right:0;height:2px;background:#9b59b6;box-shadow:0 0 10px 3px #9b59b6;animation:camScan 1.6s ease-in-out infinite}
+@keyframes camScan{0%{top:0}50%{top:calc(100% - 2px)}100%{top:0}}
 /* ─── CASH TABLE ─── */
 .cash-table{width:100%;border-collapse:collapse;font-size:14px}
 .cash-table thead th{background:#f5eeff;color:#6c3483;padding:10px 12px;font-weight:700;font-size:13px;border-bottom:2px solid #e0d0f0}
@@ -260,7 +267,13 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
           </div>
           <!-- Also keep barcode manual -->
           <input type="text" id="bc-manual" placeholder="หรือพิมพ์ Barcode แล้วกด Enter" onkeydown="if(event.key==='Enter')selectByBarcode()" autocomplete="off"
-            style="width:100%;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:12px;outline:none">
+            style="width:100%;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:8px;outline:none">
+
+          <!-- Camera scan button -->
+          <button onclick="openCamScan()" id="cam-scan-btn"
+            style="width:100%;padding:11px;background:linear-gradient(135deg,#1a8a5a,#27ae60);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:8px">
+            📷 สแกนบาร์โค้ดด้วยกล้อง
+          </button>
 
           <!-- Selected product card -->
           <div id="sel-prod-card" style="display:none;background:#f5eeff;border-radius:10px;padding:12px;margin-bottom:10px;border-left:4px solid #6c3483">
@@ -2452,6 +2465,71 @@ function doPrintCash(m, rows, grand, diff){
   openPrintWindow(html);
 }
 
+// ═══════════════════════════════════════
+//  CAMERA BARCODE SCAN (BarcodeDetector API)
+// ═══════════════════════════════════════
+var _camStream = null;
+var _camInterval = null;
+var _camDetector = null;
+var _camLastBC = '';
+var _camCooldown = false;
+
+async function openCamScan(){
+  if(!('BarcodeDetector' in window)){
+    toast('❌ ต้องใช้ Chrome บน Android เท่านั้น (BarcodeDetector API)');
+    return;
+  }
+  var modal = document.getElementById('cam-modal');
+  var status = document.getElementById('cam-status');
+  var result = document.getElementById('cam-result');
+  modal.style.display = 'flex';
+  status.textContent = 'กำลังขอสิทธิ์กล้อง...';
+  result.textContent = '';
+  try {
+    _camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    var video = document.getElementById('cam-video');
+    video.srcObject = _camStream;
+    await video.play();
+    status.textContent = 'ชี้กล้องไปที่บาร์โค้ด...';
+    _camDetector = new BarcodeDetector({
+      formats: ['ean_13','ean_8','code_128','code_39','upc_a','upc_e','itf','codabar','qr_code']
+    });
+    _camInterval = setInterval(async function(){
+      if(_camCooldown) return;
+      try {
+        var barcodes = await _camDetector.detect(video);
+        if(barcodes && barcodes.length > 0){
+          var bc = barcodes[0].rawValue;
+          if(bc === _camLastBC) return; // debounce ซ้ำ
+          _camLastBC = bc;
+          _camCooldown = true;
+          result.textContent = '✅ ' + bc;
+          // เสียง feedback
+          try { var ctx=new(window.AudioContext||window.webkitAudioContext)(); var o=ctx.createOscillator(); var g=ctx.createGain(); o.connect(g); g.connect(ctx.destination); o.frequency.value=880; g.gain.setValueAtTime(.3,ctx.currentTime); g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.15); o.start(); o.stop(ctx.currentTime+.15); } catch(e){}
+          setTimeout(function(){
+            closeCamScan();
+            var manInp = document.getElementById('bc-manual');
+            if(manInp) manInp.value = bc;
+            selectByBarcodeValue(bc);
+          }, 300);
+        }
+      } catch(e){ /* ไม่มีในเฟรมนี้ */ }
+    }, 250);
+  } catch(e){
+    status.textContent = '❌ เปิดกล้องไม่ได้: ' + e.message;
+  }
+}
+
+function closeCamScan(){
+  if(_camInterval){ clearInterval(_camInterval); _camInterval = null; }
+  if(_camStream){ _camStream.getTracks().forEach(function(t){ t.stop(); }); _camStream = null; }
+  _camLastBC = ''; _camCooldown = false;
+  var modal = document.getElementById('cam-modal');
+  if(modal) modal.style.display = 'none';
+}
+
 function openPrintWindow(bodyHtml){
   var css = '<style>'+
     'body{font-family:"Sarabun",sans-serif;font-size:12pt;color:#000;margin:20px}'+
@@ -2477,5 +2555,24 @@ function openPrintWindow(bodyHtml){
 
 
 </script>
+
+<!-- ══════════ CAMERA SCAN MODAL ══════════ -->
+<div id="cam-modal">
+  <div style="position:relative;width:100%;max-width:480px">
+    <video id="cam-video" autoplay playsinline muted></video>
+    <div class="cam-frame">
+      <div class="cam-box">
+        <div class="cam-line"></div>
+      </div>
+    </div>
+  </div>
+  <div id="cam-status" style="color:#fff;margin-top:16px;font-size:14px;text-align:center;padding:0 16px">กำลังเปิดกล้อง...</div>
+  <div id="cam-result" style="color:#9b59b6;font-size:16px;font-weight:700;margin-top:8px;min-height:24px;text-align:center"></div>
+  <button onclick="closeCamScan()"
+    style="margin-top:20px;background:#e74c3c;color:#fff;border:none;border-radius:10px;padding:13px 40px;font-size:16px;font-weight:700;cursor:pointer">
+    ✖ ปิด
+  </button>
+</div>
+
 </body>
 </html>
