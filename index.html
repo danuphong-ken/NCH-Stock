@@ -91,6 +91,11 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 .rpt-table th{background:#f5eeff;color:#6c3483;padding:8px;text-align:left;font-weight:600}
 .rpt-table td{padding:7px 8px;border-bottom:1px solid #f0e8ff}
 .rpt-total{font-weight:700;background:#fdf8ff}
+/* ─── RECOUNT BANNER ─── */
+.recount-banner{background:linear-gradient(135deg,#c0392b,#e67e22);color:#fff;padding:10px 14px;border-radius:10px;margin-bottom:10px;display:flex;align-items:center;gap:10px}
+.recount-banner b{font-size:14px}
+.recount-banner .rc-items{font-size:12px;opacity:.9}
+.recount-item-badge{background:#e67e22;color:#fff;border-radius:6px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:4px}
 /* ─── PRINT (handled via popup window) ─── */
 /* ─── SEARCH DROPDOWN ─── */
 .sdrop-item{padding:9px 14px;cursor:pointer;border-bottom:1px solid #f0e8ff;transition:background .1s}
@@ -223,6 +228,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
     <div class="tab" onclick="go('report')" id="tab-report">📊 รายงาน</div>
     <div class="tab" onclick="go('history')" id="tab-history">📋 ประวัติ</div>
     <div class="tab" onclick="go('cash')" id="tab-cash">💵 เงินสด</div>
+    <div class="tab" onclick="go('sales')" id="tab-sales">💹 ยอดขาย</div>
     <div class="tab" onclick="go('settings')" id="tab-settings">⚙️ ตั้งค่า</div>
   </div>
 
@@ -252,6 +258,15 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
             <span class="sid-badge" id="sess-id-badge">Session: —</span>
           </div>
         </div>
+      </div>
+
+      <!-- Recount Banner (shown when in recount mode) -->
+      <div id="recount-banner" style="display:none" class="recount-banner">
+        <div style="flex:1">
+          <b>🔄 โหมดนับซ่อม</b>
+          <div class="rc-items" id="recount-items-label">— รายการ</div>
+        </div>
+        <button onclick="exitRecountMode()" style="background:rgba(255,255,255,.25);border:none;color:#fff;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600">✖ ออกจากโหมดซ่อม</button>
       </div>
 
       <!-- Scan / Search Controls -->
@@ -318,7 +333,10 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <h3>📝 รายการที่นับ <span id="count-badge" style="background:#6c3483;color:#fff;border-radius:10px;padding:2px 8px;font-size:11px">0</span></h3>
-          <button class="btn btn-danger btn-sm" onclick="clearCounts()" id="btn-clear-counts" style="display:none">ล้าง</button>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm" style="background:#27ae60;color:#fff" onclick="go('sales')" title="อัปเดตยอดขายระหว่างวัน">💹 ยอดขาย</button>
+            <button class="btn btn-danger btn-sm" onclick="clearCounts()" id="btn-clear-counts" style="display:none">ล้าง</button>
+          </div>
         </div>
         <!-- Filter / Recheck -->
         <div style="position:relative;margin-bottom:10px">
@@ -524,6 +542,42 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
       <div id="cash-save-status" style="font-size:13px;color:#27ae60;margin-top:8px;min-height:18px"></div>
     </div>
 
+    <!-- ══════════ SALES PAGE ══════════ -->
+    <div class="page" id="page-sales">
+      <!-- Session summary banner -->
+      <div class="card" id="sales-sess-banner" style="background:linear-gradient(135deg,#1a6b3a,#27ae60);color:#fff;padding:12px 14px">
+        <div style="font-size:13px;opacity:.85;margin-bottom:2px">รอบการนับที่ใช้งาน</div>
+        <div id="sales-sess-label" style="font-weight:700;font-size:15px">— ยังไม่มี session —</div>
+      </div>
+
+      <!-- Hint to upload in settings -->
+      <div class="card" style="border:1.5px dashed #27ae60;background:#f0fff6">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:28px">💹</span>
+          <div>
+            <div style="font-weight:700;font-size:14px;color:#1a6b3a">อัปโหลดยอดขายระหว่างวัน</div>
+            <div style="font-size:13px;color:#555;margin-top:2px">นำเข้าไฟล์ Excel ได้ที่ Tab <strong>⚙️ ตั้งค่า</strong> → อัปเดตยอดขายระหว่างวัน</div>
+          </div>
+          <button class="btn btn-sm" style="background:#27ae60;color:#fff;margin-left:auto;white-space:nowrap" onclick="go('settings')">⚙️ ไปตั้งค่า</button>
+        </div>
+      </div>
+
+      <!-- Sales summary list (read-only) -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <h3>📋 ยอดขายทุกรายการ <span id="sales-badge" style="background:#27ae60;color:#fff;border-radius:10px;padding:2px 8px;font-size:11px">0</span></h3>
+          <button class="btn btn-sm" style="background:#6c3483;color:#fff" onclick="go('count')">📦 นับสต็อก</button>
+        </div>
+        <div id="sales-list">
+          <div class="empty"><div class="em-icon">💹</div><p>ยังไม่มีข้อมูลยอดขาย</p></div>
+        </div>
+        <div id="sales-total-bar" style="display:none;margin-top:10px;padding:10px 14px;background:#e8f8ef;border-radius:8px;font-weight:700;color:#1a6b3a;display:flex;justify-content:space-between">
+          <span>รวมยอดขายทั้งหมด</span>
+          <span id="sales-total-qty">0 ชิ้น</span>
+        </div>
+      </div>
+    </div>
+
     <!-- ══════════ SETTINGS PAGE ══════════ -->
     <div class="page" id="page-settings">
       <div class="card">
@@ -574,6 +628,29 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <div id="import-branch-bal-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
       </div>
 
+      <!-- ── อัปเดตยอดขายระหว่างวัน ── -->
+      <div class="card">
+        <h3>💹 อัปเดตยอดขายระหว่างวัน</h3>
+        <p style="font-size:13px;color:#888;margin-bottom:10px">
+          นำเข้ายอดขายจากไฟล์ Excel เข้าสู่ Session ที่ตรงกับสาขา+วันที่<br>
+          คอลัมน์: <strong>รหัสสินค้า / Barcode</strong> และ <strong>จำนวนขาย</strong>
+        </p>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <select id="sales-import-branch" style="flex:2;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;background:#fff">
+            <option value="">— เลือกสาขา —</option>
+          </select>
+          <input type="date" id="sales-import-date" style="flex:1;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px">
+        </div>
+        <p style="font-size:12px;color:#e67e22;margin-bottom:8px">⚠️ วันที่ต้องตรงกับวันที่ใน Session การนับ</p>
+        <div class="btn-row" style="margin-bottom:8px">
+          <label class="btn btn-success" style="cursor:pointer">
+            📥 Excel ยอดขาย (.xlsx)
+            <input type="file" accept=".xlsx,.xls" id="import-sales-xlsx" onchange="importSalesXLSX(this)" style="display:none">
+          </label>
+        </div>
+        <div id="import-sales-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
+      </div>
+
       <div class="card">
         <h3>ℹ️ เกี่ยวกับ</h3>
         <p style="font-size:13px;color:#888">NCH Stock Count v7 (Online)<br>นัทแคนดี้เฮาท์ จำกัด — ระบบนับสต็อกออนไลน์<br>รองรับหลายผู้ใช้พร้อมกัน | รายงานแบบ NCH Inventory Check List</p>
@@ -613,6 +690,7 @@ var prods = {};         // barcode → product object (loaded from DB)
 var counts = [];        // current session count items (in-memory)
 var currentSession = null;
 var branchBal = {};     // barcode → balance for current branch (from product_balances)
+var _LOGO_URI = 'data:image/png;base64,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';
 var pendingBC = '', camTarget = 'count', contMode = false;
 
 // ─── ยอดคงเหลือตามสาขา ───
@@ -756,13 +834,14 @@ function go(page){
   if(page==='history') loadHistory();
   if(page==='cash'){ initCash(); calcCash(); }
   if(page==='products') renderProds();
+  if(page==='sales') renderSalesPage();
 }
 
 // ═══════════════════════════════════════
 //  Branches
 // ═══════════════════════════════════════
 function populateBranches(){
-  ['sess-branch','rpt-branch','branch-bal-import-sel'].forEach(function(id){
+  ['sess-branch','rpt-branch','branch-bal-import-sel','sales-import-branch'].forEach(function(id){
     var sel = document.getElementById(id);
     if(!sel) return;
     var cur = sel.value;
@@ -972,6 +1051,14 @@ function updateSessionUI(){
     if(currentSession.status==='completed') label += ' ✅';
     document.getElementById('sess-id-badge').textContent = label;
   }
+  // Also refresh sales banner
+  var salesLabel = document.getElementById('sales-sess-label');
+  if(salesLabel){
+    var sLabel = currentSession
+      ? (currentSession.branch + ' | ' + currentSession.count_date + ' | ' + currentSession.counter_name + (currentSession.status==='completed' ? ' ✅' : ''))
+      : '— ยังไม่มี session —';
+    salesLabel.textContent = sLabel;
+  }
 }
 
 // ═══════════════════════════════════════
@@ -987,11 +1074,15 @@ async function addCount(bc, qty, soldQty, counterName){
   // ─── Issue 1.3: ถ้า barcode นี้มีอยู่แล้วใน counts → UPDATE แทน INSERT ───
   var existing = counts.find(function(c){ return c.barcode === bc; });
   if(existing){
-    var newQty  = existing.quantity + qty;
-    var newSold = (parseFloat(existing.sold_qty)||0) + soldQty;
+    // โหมดนับซ่อม: แทนที่ quantity ทั้งหมด (REPLACE) ไม่ใช่สะสม
+    var newQty  = _recountMode ? qty : existing.quantity + qty;
+    var newSold = _recountMode ? soldQty : (parseFloat(existing.sold_qty)||0) + soldQty;
+    var newCtr  = counterName || existing.counter_name || '';
+    // ถ้านับซ่อม → ต่อท้ายชื่อว่า [ซ่อม]
+    if(_recountMode && counterName && !counterName.includes('[ซ่อม]')) newCtr = counterName + ' [ซ่อม]';
     setSyncDot('syncing');
     var { data: upData, error: upErr } = await supabase.from('count_items')
-      .update({ quantity: newQty, sold_qty: newSold, counter_name: counterName||existing.counter_name||'' })
+      .update({ quantity: newQty, sold_qty: newSold, counter_name: newCtr })
       .eq('id', existing.id).select().single();
     setSyncDot(upErr ? 'off' : 'on');
     if(upErr){ toast('❌ อัปเดตไม่ได้: '+upErr.message); return; }
@@ -999,7 +1090,7 @@ async function addCount(bc, qty, soldQty, counterName){
     counts[idx] = upData;
     renderCounts();
     updateSelCounted(bc);
-    toast('✅ เพิ่ม '+qty+' ชิ้น → รวม '+newQty+' × '+(p?p.name:bc));
+    toast((_recountMode ? '🔄 ซ่อม: ' : '✅ เพิ่ม ')+qty+' ชิ้น → รวม '+newQty+' × '+(p?p.name:bc));
     return upData;
   }
 
@@ -1061,7 +1152,15 @@ function renderCounts(){
   var filtered = q ? counts.filter(function(c){
     return (c.product_name||'').toLowerCase().indexOf(q)>-1 ||
            (c.barcode||'').toLowerCase().indexOf(q)>-1;
-  }) : counts;
+  }) : counts.slice();
+  // โหมดนับซ่อม: เอารายการ "ต้องซ่อม" ขึ้นก่อน
+  if(_recountMode && !q){
+    filtered.sort(function(a, b){
+      var aNeed = _recountBarcodes[a.barcode] ? 0 : 1;
+      var bNeed = _recountBarcodes[b.barcode] ? 0 : 1;
+      return aNeed - bNeed;
+    });
+  }
   if(!filtered.length){
     el.innerHTML='<div class="empty"><div class="em-icon">🔍</div><p>ไม่พบรายการที่ตรงกับ "'+esc(q)+'"</p></div>';
     return;
@@ -1074,8 +1173,11 @@ function renderCounts(){
     var dc = diff<0?'color:#e74c3c':diff>0?'color:#27ae60':'color:#888';
     var soldBadge = sold>0 ? '<span style="background:#fdebd0;color:#e67e22;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px">ขาย '+sold+'</span>' : '';
     var ctrBadge = c.counter_name ? '<span style="background:#f0e8ff;color:#6c3483;border-radius:8px;padding:1px 7px;font-size:10px;margin-left:4px">👤 '+esc(c.counter_name)+'</span>' : '';
-    return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto">'+
-      '<div><div class="cnt-name">'+esc(c.product_name||'ไม่ทราบชื่อ')+soldBadge+ctrBadge+'</div>'+
+    var needRc   = _recountMode && _recountBarcodes[c.barcode];
+    var rcBadge  = needRc ? '<span class="recount-item-badge">ต้องซ่อม</span>' : '';
+    var itemBg   = needRc && diff !== 0 ? 'border-left:3px solid #e67e22;background:#fff3e0;' : '';
+    return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto;'+itemBg+'">'+
+      '<div><div class="cnt-name">'+esc(c.product_name||'ไม่ทราบชื่อ')+rcBadge+soldBadge+ctrBadge+'</div>'+
       '<div class="cnt-bc">'+esc(c.barcode||'')+'</div></div>'+
       '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">คงเหลือ<br><b style="font-size:14px;color:#555">'+bal+'</b></div>'+
       '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">นับจริง<br><b style="font-size:14px;color:#6c3483">'+c.quantity+'</b></div>'+
@@ -1085,6 +1187,8 @@ function renderCounts(){
       '<button class="btn btn-danger btn-sm" onclick="removeCountItem(\''+c.id+'\')">✖</button>'+
       '</div>';
   }).join('');
+  // Keep sales page in sync
+  salesAutoRefresh();
 }
 
 function editCountItem(id){
@@ -1122,6 +1226,316 @@ function editCountItem(id){
   // ล้าง filter เพื่อไม่ให้สับสน
   var f = document.getElementById('count-filter');
   if(f) f.value='';
+}
+
+// ═══════════════════════════════════════
+//  Sales Page (ยอดขายระหว่างวัน) — view only
+// ═══════════════════════════════════════
+function renderSalesPage(){
+  var label = currentSession
+    ? (currentSession.branch + ' | ' + currentSession.count_date + ' | ' + currentSession.counter_name + (currentSession.status==='completed' ? ' ✅' : ''))
+    : '— ยังไม่มี session —';
+  document.getElementById('sales-sess-label').textContent = label;
+  renderSalesList();
+}
+
+function renderSalesList(){
+  var el = document.getElementById('sales-list');
+  var badge = document.getElementById('sales-badge');
+  var totalBar = document.getElementById('sales-total-bar');
+  var totalQtyEl = document.getElementById('sales-total-qty');
+
+  var items = counts.filter(function(c){ return (parseFloat(c.sold_qty)||0) > 0; });
+  var allItems = counts.slice();
+
+  if(!allItems.length){
+    el.innerHTML = '<div class="empty"><div class="em-icon">💹</div><p>ยังไม่มีรายการที่นับ</p></div>';
+    badge.textContent = '0';
+    if(totalBar) totalBar.style.display = 'none';
+    return;
+  }
+
+  var totalSold = 0;
+  el.innerHTML = allItems.map(function(c){
+    var sold = parseFloat(c.sold_qty)||0;
+    totalSold += sold;
+    var soldColor = sold > 0 ? '#e67e22' : '#bbb';
+    var soldText  = sold > 0 ? sold.toLocaleString()+' ชิ้น' : '—';
+    return '<div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:6px;padding:9px 10px;border:1px solid #eee;border-radius:10px;margin-bottom:6px;background:'+(sold>0?'#fffcf5':'#fafafa')+'">'
+      +'<div>'
+        +'<div style="font-size:13px;font-weight:600;color:#1a1a2e">'+esc(c.product_name||'ไม่ทราบชื่อ')+'</div>'
+        +'<div style="font-size:11px;color:#999;font-family:monospace">'+esc(c.barcode||'')+'</div>'
+      +'</div>'
+      +'<div style="text-align:center;min-width:52px">'
+        +'<div style="font-size:10px;color:#888">นับจริง</div>'
+        +'<div style="font-weight:700;color:#6c3483;font-size:14px">'+c.quantity+'</div>'
+      +'</div>'
+      +'<div style="text-align:center;min-width:62px;background:'+(sold>0?'#fdebd0':'#f5f5f5')+';border-radius:8px;padding:4px 8px">'
+        +'<div style="font-size:10px;color:#888">ยอดขาย</div>'
+        +'<div style="font-weight:700;font-size:14px;color:'+soldColor+'">'+soldText+'</div>'
+      +'</div>'
+      +'</div>';
+  }).join('');
+
+  badge.textContent = allItems.length;
+  if(totalSold > 0){
+    if(totalBar) totalBar.style.display = 'flex';
+    if(totalQtyEl) totalQtyEl.textContent = totalSold.toLocaleString() + ' ชิ้น';
+  } else {
+    if(totalBar) totalBar.style.display = 'none';
+  }
+}
+
+// Auto-refresh sales list when counts change
+function salesAutoRefresh(){
+  if(typeof activePage !== 'undefined' && activePage === 'sales') renderSalesList();
+}
+
+// ═══════════════════════════════════════
+//  นับซ่อม (Recount Mode)
+// ═══════════════════════════════════════
+var _recountMode   = false;   // true = กำลังนับซ่อม
+var _recountBarcodes = {};    // barcode → true ถ้าต้องซ่อม
+
+async function startRecount(sessionId, branch, date){
+  if(!confirm('เริ่มนับซ่อมสำหรับสาขา "'+branch+'" วันที่ '+date+' ?\n\nระบบจะเปิดรอบการนับสำหรับรายการที่ผลต่าง ≠ 0')) return;
+
+  // Load the session's count_items to find diff ≠ 0
+  setSyncDot('syncing');
+  var { data: sessData, error: sessErr } = await supabase.from('count_sessions')
+    .select('*, count_items(*)').eq('id', sessionId).single();
+  setSyncDot(sessErr ? 'off' : 'on');
+  if(sessErr){ toast('❌ '+sessErr.message); return; }
+
+  // Build rptBal for this branch+date
+  var rBal = {};
+  var { data: balData } = await supabase.from('product_balances')
+    .select('barcode,balance').eq('branch', branch).eq('balance_date', date);
+  if(balData) balData.forEach(function(r){ rBal[r.barcode] = parseFloat(r.balance)||0; });
+
+  // Aggregate to find diff ≠ 0
+  var aggMap = {};
+  (sessData.count_items||[]).forEach(function(i){
+    var key = i.barcode || i.product_name || '?';
+    if(!aggMap[key]) aggMap[key] = { barcode: i.barcode, quantity: 0, sold_qty: 0 };
+    aggMap[key].quantity  += i.quantity;
+    aggMap[key].sold_qty  += parseFloat(i.sold_qty)||0;
+  });
+
+  var diffBarcodes = {};
+  Object.values(aggMap).forEach(function(a){
+    var bal  = rBal[a.barcode] || 0;
+    var diff = (a.quantity + a.sold_qty) - bal;
+    if(diff !== 0) diffBarcodes[a.barcode] = true;
+  });
+
+  if(!Object.keys(diffBarcodes).length){
+    toast('✅ ไม่มีรายการที่ผลต่าง ≠ 0 ไม่ต้องนับซ่อม'); return;
+  }
+
+  // Re-open session
+  var { error: reErr } = await supabase.from('count_sessions')
+    .update({ status: 'in_progress' }).eq('id', sessionId);
+  if(reErr){ toast('❌ เปิด session ไม่ได้: '+reErr.message); return; }
+
+  // Set as current session (reload its count items)
+  sessData.status = 'in_progress';
+  currentSession = sessData;
+  counts = sessData.count_items || [];
+
+  // Load branch balance
+  branchBal = {};
+  if(balData) balData.forEach(function(r){ branchBal[r.barcode] = parseFloat(r.balance)||0; });
+
+  // Fill branch/date/counter UI
+  document.getElementById('sess-branch').value  = branch;
+  document.getElementById('sess-date').value    = date;
+  document.getElementById('sess-counter').value = sessData.counter_name || '';
+
+  // Activate recount mode
+  _recountMode     = true;
+  _recountBarcodes = diffBarcodes;
+
+  var rcCount = Object.keys(diffBarcodes).length;
+  document.getElementById('recount-banner').style.display = '';
+  document.getElementById('recount-items-label').textContent = 'ต้องตรวจ '+rcCount+' รายการที่ผลต่าง ≠ 0';
+
+  updateSessionUI();
+  renderCounts();
+  go('count');
+  toast('🔄 เริ่มนับซ่อม '+rcCount+' รายการ');
+}
+
+function exitRecountMode(){
+  _recountMode     = false;
+  _recountBarcodes = {};
+  document.getElementById('recount-banner').style.display = 'none';
+  renderCounts();
+  toast('✅ ออกจากโหมดนับซ่อมแล้ว');
+}
+
+// ═══════════════════════════════════════
+//  Import Intraday Sales from Excel (Settings tab)
+// ═══════════════════════════════════════
+function importSalesXLSX(input){
+  var branch = document.getElementById('sales-import-branch').value;
+  var date   = document.getElementById('sales-import-date').value;
+  if(!branch){ toast('⚠️ เลือกสาขาก่อนนำเข้าไฟล์'); input.value=''; return; }
+  if(!date)  { toast('⚠️ เลือกวันที่ให้ตรงกับ Session การนับ'); input.value=''; return; }
+  var file = input.files[0]; if(!file) return;
+  if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      var wb = XLSX.read(e.target.result, {type:'array'});
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      processSalesRows(raw, input, branch, date);
+    } catch(ex){ toast('❌ อ่านไฟล์ไม่ได้: '+ex.message); input.value=''; }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function processSalesRows(raw, input, branch, date){
+  var statusEl = document.getElementById('import-sales-status');
+  statusEl.style.color = '#555';
+  statusEl.textContent = 'กำลังอ่านข้อมูล...';
+
+  var isHeader = function(v){ return !v || /^(barcode|code|รหัส|description|item.?number|รายการ|sold|ขาย|qty|uom|หน่วย|ราคา|price|balance|คงเหลือ|quantity)/i.test(String(v)); };
+
+  // ─── Build soldMap: barcode/product_code → net sold quantity ───
+  // รองรับ 2 รูปแบบ:
+  //   A) Transaction log (Pos/Neg): ค่าลบ = ขาย, ค่าบวก = ยกเลิก
+  //      → SUM ทุก row ต่อ item, แล้วเอา abs(net) ถ้าติดลบ, ถ้า >= 0 = 0
+  //   B) Summary (positive only): ค่าบวก = ยอดขาย ใช้ตรง
+  //
+  // ตรวจว่าเป็น Transaction log: ถ้ามีค่าลบอย่างน้อย 1 ค่า → Transaction mode
+
+  var rawRows = [];
+  for(var i=0; i<raw.length; i++){
+    var r = raw[i];
+    var c0 = String(r[0]||'').trim();
+    var c1 = String(r[1]||'').trim();
+    if(!c0) continue;
+    if(isHeader(c0)) continue;
+    var qty = parseFloat(c1);
+    if(isNaN(qty)) continue;
+    rawRows.push({ code: c0, qty: qty });
+  }
+
+  var hasNeg = rawRows.some(function(r){ return r.qty < 0; });
+
+  // Aggregate: sum per item code
+  var aggMap = {};
+  rawRows.forEach(function(r){
+    aggMap[r.code] = (aggMap[r.code] || 0) + r.qty;
+  });
+
+  // Build final soldMap
+  var soldMap = {};
+  var cancelledCount = 0;
+  Object.keys(aggMap).forEach(function(code){
+    var net = aggMap[code];
+    if(hasNeg){
+      // Transaction log mode: ค่าลบ = ขาย → net sold = abs(net) ถ้า net < 0
+      if(net < 0){
+        soldMap[code] = Math.abs(net);
+      } else {
+        cancelledCount++; // net >= 0 = ถูกยกเลิกหมด → sold = 0 (ไม่เพิ่มใน soldMap)
+      }
+    } else {
+      // Summary mode: ค่าบวกล้วน = ยอดขายโดยตรง
+      if(net > 0) soldMap[code] = net;
+    }
+  });
+
+  var keys = Object.keys(soldMap);
+  if(!keys.length){
+    statusEl.style.color='#e74c3c';
+    var modeMsg = hasNeg ? ' (Transaction mode: net ทุก item = 0 หรือบวก — ยอดขายสุทธิเป็น 0)' : ' (ต้องมี 2 คอลัมน์: รหัสสินค้า, จำนวนขาย)';
+    statusEl.textContent='⚠️ ไม่พบยอดขายสุทธิ'+modeMsg;
+    input.value=''; return;
+  }
+
+  var modeLabel = hasNeg
+    ? ' [Transaction mode: รวม '+rawRows.length+' rows → '+keys.length+' items มียอดขาย, '+cancelledCount+' items ถูกยกเลิกหมด]'
+    : ' [Summary mode: '+keys.length+' items]';
+  statusEl.textContent = 'ข้อมูล'+modeLabel;
+
+  // Find session matching branch + date
+  setSyncDot('syncing');
+  statusEl.textContent = 'กำลังค้นหา session สาขา "'+branch+'" วันที่ '+date+'...';
+  var { data: sessions, error: sessErr } = await supabase.from('count_sessions')
+    .select('id').eq('branch', branch).eq('count_date', date);
+  if(sessErr){ setSyncDot('off'); statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+sessErr.message; return; }
+  if(!sessions || !sessions.length){
+    setSyncDot('off'); statusEl.style.color='#e74c3c';
+    statusEl.textContent='⚠️ ไม่พบ Session สาขา "'+branch+'" วันที่ '+date;
+    input.value=''; return;
+  }
+  var sessionIds = sessions.map(function(s){ return s.id; });
+
+  // Fetch all count_items for those sessions
+  statusEl.textContent = 'กำลังดึงรายการนับ...';
+  var { data: items, error: itemErr } = await supabase.from('count_items')
+    .select('id,barcode,product_code,product_name,sold_qty')
+    .in('session_id', sessionIds);
+  if(itemErr){ setSyncDot('off'); statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+itemErr.message; return; }
+  if(!items || !items.length){
+    setSyncDot('off'); statusEl.style.color='#e74c3c';
+    statusEl.textContent='⚠️ ยังไม่มีรายการนับใน Session นี้';
+    input.value=''; return;
+  }
+
+  // Match each count_item to soldMap via barcode or product_code
+  var updates = [];
+  items.forEach(function(it){
+    var sold = soldMap[it.barcode] !== undefined ? soldMap[it.barcode]
+             : soldMap[it.product_code] !== undefined ? soldMap[it.product_code]
+             : null;
+    if(sold !== null) updates.push({ id: it.id, sold_qty: sold });
+  });
+
+  if(!updates.length){
+    setSyncDot('off'); statusEl.style.color='#e74c3c';
+    statusEl.textContent='⚠️ ไม่พบรหัสที่ตรงกับรายการนับ ('+keys.length+' รหัสในไฟล์, '+items.length+' รายการใน Session)';
+    input.value=''; return;
+  }
+
+  statusEl.textContent = 'กำลังอัปเดต '+updates.length+' รายการ...';
+  var BATCH=50, done=0, errMsg='';
+  for(var b=0; b<updates.length; b+=BATCH){
+    var chunk = updates.slice(b, b+BATCH);
+    // Update each individually (Supabase doesn't support bulk update with different values)
+    for(var j=0; j<chunk.length; j++){
+      var u = chunk[j];
+      var { error: uErr } = await supabase.from('count_items')
+        .update({ sold_qty: u.sold_qty }).eq('id', u.id);
+      if(uErr){ errMsg = uErr.message; break; }
+      done++;
+    }
+    if(errMsg) break;
+    statusEl.textContent = 'กำลังอัปเดต '+done+'/'+updates.length+'...';
+  }
+
+  setSyncDot(errMsg ? 'off' : 'on');
+  if(errMsg){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+errMsg; return; }
+
+  statusEl.style.color='#27ae60';
+  var cancelNote = (hasNeg && cancelledCount > 0) ? ' | ยกเลิกหมด '+cancelledCount+' รหัส (sold=0)' : '';
+  statusEl.textContent='✅ อัปเดตยอดขาย '+done+' รายการสำเร็จ — '+keys.length+' รหัสมียอดสุทธิ'+cancelNote;
+  toast('✅ อัปเดตยอดขาย '+done+' รายการ สาขา "'+branch+'"');
+
+  // If current session matches → refresh local counts + sales page
+  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+    updates.forEach(function(u){
+      var idx = counts.findIndex(function(c){ return c.id===u.id; });
+      if(idx > -1) counts[idx].sold_qty = u.sold_qty;
+    });
+    renderCounts();
+    renderSalesList();
+  }
+  input.value='';
 }
 
 function manualCount(){
@@ -1363,14 +1777,50 @@ async function loadReport(){
       '<div style="background:#e8e0f0;border-radius:6px;height:6px;overflow:hidden">'+
       '<div style="background:'+(pct===100?'#27ae60':'#6c3483')+';width:'+pct+'%;height:100%;border-radius:6px;transition:width .3s"></div></div>';
 
+    // ─── Multi-counter breakdown ───
+    var counterMap = {};
+    items.forEach(function(raw){
+      var ctr = raw.counter_name || '(ไม่ระบุชื่อ)';
+      if(!counterMap[ctr]) counterMap[ctr] = { qty: 0, sold: 0, count: 0 };
+      counterMap[ctr].qty   += raw.quantity;
+      counterMap[ctr].sold  += parseFloat(raw.sold_qty)||0;
+      counterMap[ctr].count += 1;
+    });
+    var counterNames = Object.keys(counterMap);
+    var multiCounterSection = '';
+    if(counterNames.length > 1){
+      multiCounterSection = '<div style="margin:8px 0;padding:10px 12px;background:#f0f7ff;border-radius:8px;border-left:4px solid #2980b9">'+
+        '<div style="font-size:12px;font-weight:700;color:#1a5276;margin-bottom:6px">👥 ยอดตามผู้นับ</div>'+
+        '<div style="display:flex;flex-wrap:wrap;gap:8px">'+
+        counterNames.map(function(ctr){
+          var d = counterMap[ctr];
+          return '<div style="background:#fff;border:1px solid #d4e6f1;border-radius:8px;padding:6px 12px;font-size:12px">'+
+            '<div style="font-weight:700;color:#1a5276">👤 '+esc(ctr)+'</div>'+
+            '<div style="color:#555;margin-top:2px">นับ '+d.count+' รายการ | รวม '+d.qty+' ชิ้น'+(d.sold?' | ขาย '+d.sold:'')+' ชิ้น</div>'+
+            '</div>';
+        }).join('')+
+        '</div></div>';
+    }
+
+    // ─── diff ≠ 0 items (for recount) ───
+    var diffItems = countedItems.filter(function(i){ return (i.quantity+(i.sold_qty||0))-i.balance !== 0; });
+    var recountBtn = isDone && diffItems.length > 0
+      ? '<button onclick="event.stopPropagation();startRecount(\''+s.id+'\',\''+esc(s.branch)+'\',\''+s.count_date+'\')" '+
+        'style="margin-left:6px;background:#e67e22;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:\'Sarabun\',sans-serif">'+
+        '🔄 นับซ่อม ('+diffItems.length+')</button>'
+      : '';
+
     var tableRows = aggItems.map(function(i, idx){
       var diff    = (i.quantity + (i.sold_qty||0)) - i.balance;
       var diffClr = diff < 0 ? '#e74c3c' : diff > 0 ? '#27ae60' : '#888';
       var diffTxt = (diff > 0 ? '+' : '') + diff.toLocaleString();
-      var rowBg   = i.uncounted ? 'background:#fff8f0' : '';
+      var needRecount = !i.uncounted && diff !== 0;
+      var rowBg   = i.uncounted ? 'background:#fff8f0' : needRecount ? 'background:#fff3e0' : '';
       var statusCell = i.uncounted
         ? '<span style="background:#fdebd0;color:#e67e22;border-radius:8px;padding:1px 7px;font-size:11px">⬜ ยังไม่นับ</span>'
-        : '<span style="background:#d5f5e3;color:#1e8449;border-radius:8px;padding:1px 7px;font-size:11px">✅ นับแล้ว</span>';
+        : needRecount
+          ? '<span style="background:#fdebd0;color:#c0392b;border-radius:8px;padding:1px 7px;font-size:11px">⚠️ ต่างจาก Bal</span>'
+          : '<span style="background:#d5f5e3;color:#1e8449;border-radius:8px;padding:1px 7px;font-size:11px">✅ ตรง</span>';
       return '<tr style="'+rowBg+'">'+
         '<td style="text-align:center;color:#999">'+(idx+1)+'</td>'+
         '<td style="font-family:monospace;font-size:12px">'+esc(i.barcode||'')+'<br>'+
@@ -1392,7 +1842,8 @@ async function loadReport(){
       '<span style="font-size:12px;color:#666">'+s.count_date+' | ผู้นับ: '+esc(s.counter_name)+'</span>'+
       progressBar+'</div>'+
       '<span style="font-size:13px;font-weight:700;color:#6c3483;white-space:nowrap;margin-left:8px">'+grandQty.toLocaleString()+' ชิ้น ▾</span>'+
-      '<button onclick="event.stopPropagation();printSession('+si+')" style="margin-left:10px;background:#6c3483;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:\'Sarabun\',sans-serif">🖨️ ปริ้น</button></div>'+
+      '<button onclick="event.stopPropagation();printSession('+si+')" style="margin-left:6px;background:#6c3483;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:\'Sarabun\',sans-serif">🖨️ ปริ้น</button>'+
+      recountBtn+'</div>'+
       '<div class="rpt-session-body" id="rpt-body-'+si+'">'+
       // NCH Report Header
       '<div style="text-align:center;margin-bottom:8px;padding:8px;background:#f9f5ff;border-radius:8px">'+
@@ -1415,6 +1866,11 @@ async function loadReport(){
       '<div style="flex:1;min-width:100px;background:'+(pct===100?'#d5f5e3':'#fef9e7')+';border-radius:8px;padding:8px;text-align:center">'+
       '<div style="font-size:11px;color:#888">ความครบถ้วน</div><div style="font-weight:700;color:'+(pct===100?'#27ae60':'#e67e22')+';font-size:18px">'+pct+'%</div></div>'+
       '</div>'+
+      // Multi-counter breakdown
+      multiCounterSection+
+      // Sales upload reminder (when not done or no sold)
+      (!isDone ? '<div style="margin:6px 0;padding:8px 12px;background:#e8f8ef;border-radius:8px;font-size:12px;color:#1a6b3a">'+
+        '💹 <strong>ยอดขายระหว่างวัน:</strong> เมื่อนับเสร็จแล้ว อัปโหลด Sales Transactions ได้ที่ Tab ⚙️ ตั้งค่า → อัปเดตยอดขายระหว่างวัน</div>' : '')+
       // Table
       '<div style="overflow-x:auto">'+
       '<table class="rpt-table" style="min-width:640px">'+
@@ -1561,46 +2017,93 @@ async function exportExcel(){
   var wb = XLSX.utils.book_new();
   var branch = document.getElementById('rpt-branch').value || 'ทุกสาขา';
   var date   = document.getElementById('rpt-date').value || new Date().toISOString().slice(0,10);
+  var COLS = 10; // total columns
 
   agg.forEach(function(g, gi){
     var s = g.session;
     var thaiDate = s.count_date ? s.count_date.split('-').reverse().join('/') : '';
     var wsData = [];
-    // Title rows
-    wsData.push(['ใบรายงานการตรวจนับสินค้า : Brand NCH', '', '', '', '', '', '', '', '']);
-    wsData.push(['Inventory Check List Report', '', '', '', '', '', '', '', '']);
-    wsData.push(['ห้าง/Department:', s.branch, '', 'สาขา/Branch:', s.branch, '', 'วันที่/Date:', thaiDate, '']);
-    wsData.push(['ผู้นับ:', s.counter_name, '', 'สถานะ:', s.status==='completed'?'เสร็จสิ้น':'กำลังนับ', '', '', '', '']);
-    wsData.push([]); // blank row
-    // Header (9 cols)
-    wsData.push(['ลำดับ','Barcode','Item Number\nรหัสสินค้า','ชื่อสินค้า','สถานะ','ยอดคงเหลือ\nBalance','นับจริง\nCount','จำนวนขาย\nSold','ผลต่าง\nDifference']);
-    // Data rows
-    g.items.forEach(function(i, idx){
-      var diff = i.uncounted ? '' : (i.quantity + (i.sold_qty||0)) - (i.balance||0);
-      var status = i.uncounted ? 'ยังไม่นับ' : 'นับแล้ว';
-      wsData.push([idx+1, i.barcode, i.product_code, i.product_name, status, i.balance||0, i.uncounted ? 0 : i.quantity, i.uncounted ? 0 : (i.sold_qty||0), diff]);
-    });
-    // Total row (counted only)
-    var counted = g.items.filter(function(i){ return !i.uncounted; });
-    var gBal  = g.items.reduce(function(a,i){ return a+(i.balance||0); },0);
-    var gQty  = counted.reduce(function(a,i){ return a+i.quantity; },0);
-    var gSold = counted.reduce(function(a,i){ return a+(i.sold_qty||0); },0);
-    wsData.push(['', '', '', 'รวมทั้งหมด', '', gBal, gQty, gSold, gQty+gSold-gBal]);
+
+    // ── Title rows (merged across all cols) ──
+    wsData.push(['รายงานการตรวจนับสินค้า  Inventory Count Report','','','','','','','','','']);
+    // ── Meta row ──
+    wsData.push(['ห้าง/สาขา: '+esc(s.branch),'','','วันที่: '+thaiDate,'','','ผู้นับ: '+esc(s.counter_name),'','','']);
     wsData.push([]); // blank
-    // Signature rows
-    wsData.push(['ลายเซ็น ผู้ตรวจนับ', '', '', '', '', 'ลายเซ็น พนักงานขาย', '', '', '']);
-    wsData.push(['', '', '', '', '', '', '', '', '']);
-    wsData.push(['__________________________', '', '', '', '', '__________________________', '', '', '']);
-    wsData.push(['หัวหน้าเขต / Area Manager', '', '', '', '', 'พนักงานขาย / Sales', '', '', '']);
-    wsData.push([]);
-    wsData.push(['ลายเซ็น ผู้รับผิดชอบ Loss Stock', '', '', '', '', 'ลายเซ็น ผู้ตรวจสอบ บัญชีสต็อค', '', '', '']);
-    wsData.push(['', '', '', '', '', '', '', '', '']);
-    wsData.push(['__________________________', '', '', '', '', '__________________________', '', '', '']);
-    wsData.push(['Loss Stock', '', '', '', '', 'Stock Auditor / หัวหน้าแผนกบัญชี', '', '', '']);
+
+    // ── Column headers (10 cols) ──
+    wsData.push([
+      'ลำดับ','รหัสสินค้า','ชื่อสินค้า','สถานะ',
+      'คงเหลือ','นับจริง','จำนวนขาย','ผลต่าง',
+      'ราคา','ผลต่าง (บาท)'
+    ]);
+
+    // ── Data rows — filter out all-zero rows ──
+    var displayItems = g.items.filter(function(i){
+      return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0);
+    });
+    var rowNum = 0;
+    displayItems.forEach(function(i){
+      rowNum++;
+      var sold    = i.sold_qty||0;
+      var diff    = (i.quantity + sold) - (i.balance||0);
+      var price   = parseFloat(i.price)||0;
+      var monDiff = diff * price;
+      var isOk    = (!i.uncounted && diff===0);
+      var status  = isOk ? 'ตรง' : 'ไม่ตรง';
+      wsData.push([
+        rowNum,
+        i.product_code,
+        i.product_name,
+        status,
+        i.balance||0,
+        i.quantity,
+        sold,
+        diff,
+        price||'',
+        price ? monDiff : ''
+      ]);
+    });
+
+    // ── Total row ──
+    var gBal     = displayItems.reduce(function(a,i){ return a+(i.balance||0); },0);
+    var gQty     = displayItems.reduce(function(a,i){ return a+i.quantity; },0);
+    var gSold    = displayItems.reduce(function(a,i){ return a+(i.sold_qty||0); },0);
+    var gDiff    = gQty + gSold - gBal;
+    var gMonDiff = displayItems.reduce(function(a,i){
+      var d=(i.quantity+(i.sold_qty||0))-(i.balance||0); return a+d*(parseFloat(i.price)||0);
+    },0);
+    wsData.push(['','','','รวมทั้งหมด', gBal, gQty, gSold, gDiff, '', gMonDiff]);
+    wsData.push([]); // blank
+
+    // ── Signature rows (4 blocks) ──
+    wsData.push(['พนักงานขาย 1','','','พนักงานขาย 2','','','หัวหน้าเขต','','ผู้ตรวจสอบ','']);
+    wsData.push(['','','','','','','','','','']);
+    wsData.push(['','','','','','','','','','']);
+    wsData.push(['__________________','','','__________________','','','__________________','','__________________','']);
+    wsData.push(['พนักงานขาย 1','','','พนักงานขาย 2','','','หัวหน้าเขต','','ผู้ตรวจสอบ','']);
 
     var ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{wch:6},{wch:16},{wch:16},{wch:30},{wch:10},{wch:14},{wch:12},{wch:12},{wch:12}];
-    ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:8}},{s:{r:1,c:0},e:{r:1,c:8}}];
+
+    // Column widths
+    ws['!cols'] = [
+      {wch:6},  // ลำดับ
+      {wch:14}, // รหัสสินค้า
+      {wch:32}, // ชื่อสินค้า
+      {wch:9},  // สถานะ
+      {wch:11}, // คงเหลือ
+      {wch:10}, // นับจริง
+      {wch:11}, // จำนวนขาย
+      {wch:10}, // ผลต่าง
+      {wch:10}, // ราคา
+      {wch:13}  // ผลต่าง(บาท)
+    ];
+    // Merges: title row (r0), meta row (r1) — split into 3 groups
+    ws['!merges'] = [
+      {s:{r:0,c:0},e:{r:0,c:COLS-1}},  // title full width
+      {s:{r:1,c:0},e:{r:1,c:2}},        // ห้าง/สาขา
+      {s:{r:1,c:3},e:{r:1,c:5}},        // วันที่
+      {s:{r:1,c:6},e:{r:1,c:COLS-1}}    // ผู้นับ
+    ];
 
     var sheetName = (s.branch.replace(/สาขา /,'').slice(0,20)||('Sheet'+(gi+1)));
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
@@ -2616,28 +3119,65 @@ function printStockReport(){
   var html = agg.map(function(g){
     var s = g.session;
     var thaiDate = (s.count_date||'').split('-').reverse().join('/');
-    var rows = g.items.map(function(i,idx){
-      var sold = i.sold_qty||0;
-      var diff = (i.quantity + sold) - (i.balance||0);
-      var dc   = diff<0?'color:#c0392b':diff>0?'color:#27ae60':'';
-      return '<tr><td>'+( idx+1)+'</td><td>'+esc(i.barcode)+'<br><small>'+esc(i.product_name)+'</small></td>'+
-        '<td>'+esc(i.product_code)+'</td><td style="text-align:right">'+esc(i.balance||0)+'</td>'+
-        '<td style="text-align:right">'+esc(i.quantity)+'</td>'+
-        '<td style="text-align:right;color:#e67e22">'+(sold||'—')+'</td>'+
-        '<td style="text-align:right;'+dc+'"><b>'+(diff>=0?'+':'')+diff+'</b></td></tr>';
+    var rowNum2 = 0;
+    var rows = g.items.filter(function(i){
+      return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0);
+    }).map(function(i){
+      rowNum2++;
+      var sold   = i.sold_qty||0;
+      var diff   = (i.quantity + sold) - (i.balance||0);
+      var price  = parseFloat(i.price)||0;
+      var monDiff= diff*price;
+      var isOk   = (!i.uncounted && diff===0);
+      return '<tr>'+
+        '<td class="center">'+rowNum2+'</td>'+
+        '<td>'+esc(i.product_code)+'</td>'+
+        '<td>'+esc(i.product_name)+'</td>'+
+        '<td class="center '+(isOk?'st-ok':'st-ng')+'">'+(isOk?'ตรง':'ไม่ตรง')+'</td>'+
+        '<td class="num">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
+        '<td class="num">'+i.quantity.toLocaleString()+'</td>'+
+        '<td class="num">'+(sold?sold.toLocaleString():'—')+'</td>'+
+        '<td class="num" style="'+(diff<0?'color:#cc0000':diff>0?'color:#1a6b3a':'')+'">'+(diff>=0?'+':'')+diff+'</td>'+
+        '<td class="num">'+(price?price.toLocaleString():'—')+'</td>'+
+        '<td class="num" style="'+(monDiff<0?'color:#cc0000':monDiff>0?'color:#1a6b3a':'font-weight:normal')+'">'+(price?(monDiff>=0?'+':'')+monDiff.toLocaleString():'—')+'</td>'+
+        '</tr>';
     }).join('');
     var gBal=g.items.reduce(function(a,r){return a+(r.balance||0);},0);
     var gQty=g.items.reduce(function(a,r){return a+r.quantity;},0);
     var gSold=g.items.reduce(function(a,r){return a+(r.sold_qty||0);},0);
-    return '<div class="print-title">ใบรายงานการตรวจนับสินค้า : Brand NCH</div>'+
-      '<div class="print-sub">Inventory Check List Report</div>'+
-      '<div class="print-meta"><span>ห้าง/สาขา: <b>'+esc(s.branch)+'</b></span><span>วันที่: <b>'+thaiDate+'</b></span><span>ผู้นับ: <b>'+esc(s.counter_name)+'</b></span></div>'+
-      '<table class="print-table"><thead><tr><th>ลำดับ</th><th>Barcode / ชื่อสินค้า</th><th>รหัส</th><th style="text-align:right">คงเหลือ</th><th style="text-align:right">นับจริง</th><th style="text-align:right">จำนวนขาย</th><th style="text-align:right">ผลต่าง</th></tr></thead><tbody>'+rows+
-      '<tr><td colspan="3"><b>รวม</b></td><td style="text-align:right"><b>'+gBal+'</b></td><td style="text-align:right"><b>'+gQty+'</b></td><td style="text-align:right;color:#e67e22"><b>'+gSold+'</b></td><td style="text-align:right"><b>'+(gQty+gSold-gBal)+'</b></td></tr></tbody></table>'+
-      '<div class="print-sign"><div class="print-sign-box"><div class="print-sign-line"></div><div>หัวหน้าเขต / Area Manager</div></div>'+
-      '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย / Sales</div></div>'+
-      '<div class="print-sign-box"><div class="print-sign-line"></div><div>Loss Stock</div></div>'+
-      '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ตรวจสอบ บัญชีสต็อค</div></div></div>';
+    var gMon = g.items.reduce(function(a,r){var d=(r.quantity+(r.sold_qty||0))-(r.balance||0);return a+d*(parseFloat(r.price)||0);},0);
+    return '<div class="print-header"><img class="print-logo" src="'+_LOGO_URI+'" alt="NutCandy Logo">'+
+      '<div class="print-title-block"><div class="print-title">รายงานการตรวจนับสินค้า</div><div class="print-sub">Inventory Count Report</div></div></div>'+
+      '<div class="print-meta">'+
+        '<div class="print-meta-cell"><span class="print-meta-label">ห้าง / สาขา</span><span class="print-meta-val">'+esc(s.branch)+'</span></div>'+
+        '<div class="print-meta-cell"><span class="print-meta-label">วันที่</span><span class="print-meta-val">'+thaiDate+'</span></div>'+
+        '<div class="print-meta-cell"><span class="print-meta-label">ผู้นับ</span><span class="print-meta-val">'+esc(s.counter_name)+'</span></div>'+
+      '</div>'+
+      '<table><thead><tr>'+
+        '<th class="center" style="width:32px">ลำดับ</th>'+
+        '<th style="width:90px">รหัสสินค้า</th>'+
+        '<th>ชื่อสินค้า</th>'+
+        '<th class="center" style="width:52px">สถานะ</th>'+
+        '<th class="num" style="width:60px">คงเหลือ</th>'+
+        '<th class="num" style="width:55px">นับจริง</th>'+
+        '<th class="num" style="width:60px">จำนวนขาย</th>'+
+        '<th class="num" style="width:55px">ผลต่าง</th>'+
+        '<th class="num" style="width:55px">ราคา</th>'+
+        '<th class="num" style="width:70px">ผลต่าง (บาท)</th>'+
+      '</tr></thead><tbody>'+rows+
+      '</tbody><tfoot><tr>'+
+        '<td colspan="4" style="text-align:right">รวม</td>'+
+        '<td class="num"><b>'+gBal+'</b></td><td class="num"><b>'+gQty+'</b></td>'+
+        '<td class="num"><b>'+gSold+'</b></td>'+
+        '<td class="num"><b>'+(gQty+gSold-gBal)+'</b></td>'+
+        '<td class="num">—</td><td class="num"><b>'+(gMon>=0?'+':'')+gMon.toLocaleString()+'</b></td>'+
+      '</tr></tfoot></table>'+
+      '<div class="print-sign">'+
+        '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย 1</div></div>'+
+        '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย 2</div></div>'+
+        '<div class="print-sign-box"><div class="print-sign-line"></div><div>หัวหน้าเขต</div></div>'+
+        '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ตรวจสอบ</div></div>'+
+      '</div>';
   }).join('<hr style="margin:24px 0">');
   openPrintWindow(html);
 }
@@ -2697,71 +3237,95 @@ async function printSession(si){
   var grandQty  = countedItems.reduce(function(a,i){ return a+i.quantity; },0);
   var pct = totalProds ? Math.round(countedItems.length/totalProds*100) : 0;
 
-  var rows = aggItems.map(function(i, idx){
-    var sold = i.sold_qty||0;
-    var diff = (i.quantity + sold) - (i.balance||0);
-    var dc   = i.uncounted ? 'color:#bbb' : (diff<0?'color:#c0392b':diff>0?'color:#27ae60':'');
-    var rowStyle = i.uncounted ? 'background:#fff8f0' : '';
-    var statusTxt = i.uncounted ? '⬜ ยังไม่นับ' : '✅ นับแล้ว';
-    return '<tr style="'+rowStyle+'">'+
-      '<td style="text-align:center">'+(idx+1)+'</td>'+
-      '<td>'+esc(i.barcode)+'<br><small>'+esc(i.product_name)+'</small></td>'+
+  // Filter: skip rows where balance=0, quantity=0, sold_qty=0 (all zero = no data)
+  var displayItems = aggItems.filter(function(i){
+    return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0);
+  });
+  var rowNum = 0;
+  var rows = displayItems.map(function(i){
+    rowNum++;
+    var sold   = i.sold_qty||0;
+    var diff   = (i.quantity + sold) - (i.balance||0);
+    var price  = parseFloat(i.price)||0;
+    var monDiff= diff * price;
+    var isOk   = (!i.uncounted && diff===0);
+    var stClass= isOk ? 'st-ok' : 'st-ng';
+    var stTxt  = isOk ? 'ตรง' : 'ไม่ตรง';
+    var diffTxt= (diff>=0?'+':'')+diff.toLocaleString();
+    var monTxt = (monDiff>=0?'+':'')+monDiff.toLocaleString();
+    return '<tr>'+
+      '<td class="center">'+rowNum+'</td>'+
       '<td>'+esc(i.product_code)+'</td>'+
-      '<td style="text-align:center">'+statusTxt+'</td>'+
-      '<td style="text-align:right">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
-      '<td style="text-align:right;color:'+(i.uncounted?'#bbb':'#6c3483')+'"><b>'+i.quantity.toLocaleString()+'</b></td>'+
-      '<td style="text-align:right;color:#e67e22">'+(sold||'—')+'</td>'+
-      '<td style="text-align:right;'+dc+'"><b>'+(i.uncounted?'—':(diff>=0?'+':'')+diff.toLocaleString())+'</b></td></tr>';
+      '<td>'+esc(i.product_name)+'</td>'+
+      '<td class="center '+stClass+'">'+stTxt+'</td>'+
+      '<td class="num">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
+      '<td class="num">'+i.quantity.toLocaleString()+'</td>'+
+      '<td class="num">'+(sold?sold.toLocaleString():'—')+'</td>'+
+      '<td class="num" style="'+(diff<0?'color:#cc0000':diff>0?'color:#1a6b3a':'')+'">'+diffTxt+'</td>'+
+      '<td class="num">'+( price ? price.toLocaleString() : '—' )+'</td>'+
+      '<td class="num" style="'+(monDiff<0?'color:#cc0000':monDiff>0?'color:#1a6b3a':'font-weight:normal')+'">'+( price ? monTxt : '—' )+'</td>'+
+      '</tr>';
   }).join('');
 
-  var gBal  = aggItems.reduce(function(a,r){ return a+(r.balance||0); },0);
-  var gSold = countedItems.reduce(function(a,r){ return a+(r.sold_qty||0); },0);
-  var gDiff = grandQty + gSold - gBal;
+  var gBal     = displayItems.reduce(function(a,r){ return a+(r.balance||0); },0);
+  var gQty     = displayItems.reduce(function(a,r){ return a+r.quantity; },0);
+  var gSold    = displayItems.reduce(function(a,r){ return a+(r.sold_qty||0); },0);
+  var gDiff    = gQty + gSold - gBal;
+  var gMonDiff = displayItems.reduce(function(a,r){
+    var d=(r.quantity+(r.sold_qty||0))-(r.balance||0); return a+d*(parseFloat(r.price)||0);
+  },0);
 
   var html =
-    '<div class="print-title">ใบรายงานการตรวจนับสินค้า : Brand NCH</div>'+
-    '<div class="print-sub">Inventory Check List Report</div>'+
+    '<div class="print-header">'+
+      '<img class="print-logo" src="'+_LOGO_URI+'" alt="NutCandy Logo">'+
+      '<div class="print-title-block">'+
+        '<div class="print-title">รายงานการตรวจนับสินค้า</div>'+
+        '<div class="print-sub">Inventory Count Report</div>'+
+      '</div>'+
+    '</div>'+
     '<div class="print-meta">'+
-      '<span>ห้าง/สาขา: <b>'+esc(s.branch)+'</b></span>'+
-      '<span>วันที่: <b>'+thaiDate+'</b></span>'+
-      '<span>ผู้นับ: <b>'+esc(s.counter_name)+'</b></span>'+
-      '<span>สถานะ: <b>'+(isDone?'✅ เสร็จสิ้น':'🔄 กำลังนับ')+'</b></span>'+
+      '<div class="print-meta-cell"><span class="print-meta-label">ห้าง / สาขา</span><span class="print-meta-val">'+esc(s.branch)+'</span></div>'+
+      '<div class="print-meta-cell"><span class="print-meta-label">วันที่</span><span class="print-meta-val">'+thaiDate+'</span></div>'+
+      '<div class="print-meta-cell"><span class="print-meta-label">ผู้นับ</span><span class="print-meta-val">'+esc(s.counter_name)+'</span></div>'+
     '</div>'+
-    '<div style="margin-bottom:10px;font-size:11pt">'+
+    '<div class="print-progress">'+
       'นับแล้ว <b>'+countedItems.length+'</b> / <b>'+totalProds+'</b> รายการ ('+pct+'%)'+
-      (uncountedItems.length ? ' | ยังไม่นับ <b style="color:#c0392b">'+uncountedItems.length+'</b> รายการ' : '')+
+      (uncountedItems.length ? ' &nbsp;|&nbsp; ยังไม่นับ <b style="color:#cc0000">'+uncountedItems.length+'</b> รายการ' : ' &nbsp;|&nbsp; <b style="color:#1a6b3a">นับครบทุกรายการ ✓</b>')+
     '</div>'+
-    '<table class="print-table">'+
+    '<table>'+
       '<thead><tr>'+
-        '<th style="width:36px;text-align:center">ลำดับ</th>'+
-        '<th>Barcode / ชื่อสินค้า</th>'+
-        '<th>รหัสสินค้า</th>'+
-        '<th style="text-align:center">สถานะนับ</th>'+
-        '<th style="text-align:right">คงเหลือ</th>'+
-        '<th style="text-align:right">นับจริง</th>'+
-        '<th style="text-align:right">จำนวนขาย</th>'+
-        '<th style="text-align:right">ผลต่าง</th>'+
+        '<th class="center" style="width:32px">ลำดับ</th>'+
+        '<th style="width:90px">รหัสสินค้า</th>'+
+        '<th>ชื่อสินค้า</th>'+
+        '<th class="center" style="width:52px">สถานะ</th>'+
+        '<th class="num" style="width:60px">คงเหลือ</th>'+
+        '<th class="num" style="width:55px">นับจริง</th>'+
+        '<th class="num" style="width:60px">จำนวนขาย</th>'+
+        '<th class="num" style="width:55px">ผลต่าง</th>'+
+        '<th class="num" style="width:55px">ราคา</th>'+
+        '<th class="num" style="width:70px">ผลต่าง (บาท)</th>'+
       '</tr></thead>'+
       '<tbody>'+rows+'</tbody>'+
       '<tfoot><tr>'+
-        '<td colspan="4" style="text-align:right"><b>รวมทั้งหมด</b></td>'+
-        '<td style="text-align:right"><b>'+gBal.toLocaleString()+'</b></td>'+
-        '<td style="text-align:right;color:#6c3483"><b>'+grandQty.toLocaleString()+'</b></td>'+
-        '<td style="text-align:right;color:#e67e22"><b>'+gSold.toLocaleString()+'</b></td>'+
-        '<td style="text-align:right;'+(gDiff<0?'color:#c0392b':gDiff>0?'color:#27ae60':'')+
-          '"><b>'+(gDiff>=0?'+':'')+gDiff.toLocaleString()+'</b></td>'+
+        '<td colspan="4" style="text-align:right">รวมทั้งหมด</td>'+
+        '<td class="num">'+gBal.toLocaleString()+'</td>'+
+        '<td class="num">'+gQty.toLocaleString()+'</td>'+
+        '<td class="num">'+gSold.toLocaleString()+'</td>'+
+        '<td class="num" style="'+(gDiff<0?'color:#cc0000':gDiff>0?'color:#1a6b3a':'')+'">'+(gDiff>=0?'+':'')+gDiff.toLocaleString()+'</td>'+
+        '<td class="num">—</td>'+
+        '<td class="num" style="'+(gMonDiff<0?'color:#cc0000':gMonDiff>0?'color:#1a6b3a':'')+'">'+(gMonDiff>=0?'+':'')+gMonDiff.toLocaleString()+'</td>'+
       '</tr></tfoot>'+
     '</table>'+
-    (isDone
-      ? '<div class="print-sign">'+
-          '<div class="print-sign-box"><div class="print-sign-line"></div><div>หัวหน้าเขต / Area Manager</div></div>'+
-          '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย / Sales</div></div>'+
-          '<div class="print-sign-box"><div class="print-sign-line"></div><div>Loss Stock</div></div>'+
-          '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ตรวจสอบ บัญชีสต็อค</div></div>'+
-        '</div>'
-      : '<div style="margin-top:20px;padding:10px 14px;background:#fef9e7;border:1px solid #f39c12;border-radius:8px;font-size:11pt">'+
-          '⚠️ Session นี้ยังอยู่ระหว่างการนับ ลายเซ็นจะแสดงเมื่อจบรอบแล้ว'+
-        '</div>'
+    '<div class="print-sign">'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย 1</div></div>'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>พนักงานขาย 2</div></div>'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>หัวหน้าเขต</div></div>'+
+      '<div class="print-sign-box"><div class="print-sign-line"></div><div>ผู้ตรวจสอบ</div></div>'+
+    '</div>'+
+    (isDone ? '' :
+      '<div style="margin-top:16px;padding:8px 12px;background:#fef9e7;border:1px solid #f39c12;border-radius:6px;font-size:10pt">'+
+        '⚠️ Session นี้ยังอยู่ระหว่างการนับ'+
+      '</div>'
     );
 
   openPrintWindow(html);
@@ -2891,18 +3455,32 @@ function closeCamScan(){
 
 function openPrintWindow(bodyHtml){
   var css = '<style>'+
-    'body{font-family:"Sarabun",sans-serif;font-size:12pt;color:#000;margin:20px}'+
-    '.print-title{font-size:16pt;font-weight:700;text-align:center;margin-bottom:4px}'+
-    '.print-sub{text-align:center;font-size:11pt;margin-bottom:10px}'+
-    '.print-meta{display:flex;justify-content:space-between;margin-bottom:12px;font-size:11pt;flex-wrap:wrap;gap:6px}'+
-    'table{width:100%;border-collapse:collapse;font-size:11pt;margin-bottom:12px}'+
-    'th{background:#ddd;padding:6px 8px;font-weight:700;border:1px solid #999;text-align:left}'+
-    'td{padding:5px 8px;border:1px solid #ccc}'+
-    '.print-summary{text-align:right;font-size:12pt;margin-top:8px}'+
-    '.print-sign{display:flex;justify-content:space-around;margin-top:48px;flex-wrap:wrap;gap:20px}'+
-    '.print-sign-box{text-align:center;min-width:160px}'+
-    '.print-sign-line{border-top:1px solid #333;margin:36px 0 6px}'+
-    'hr{border:none;border-top:1px dashed #aaa;margin:24px 0}'+
+    '@import url("https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap");'+
+    'body{font-family:"Sarabun",sans-serif;font-size:10.5pt;color:#000;margin:14px;line-height:1.4}'+
+    '.print-header{display:flex;align-items:center;gap:14px;border-bottom:3px solid #cc0000;padding-bottom:10px;margin-bottom:10px}'+
+    '.print-logo{height:46px;object-fit:contain;flex-shrink:0}'+
+    '.print-title-block{flex:1;text-align:center}'+
+    '.print-title{font-size:14pt;font-weight:700;margin:0 0 2px}'+
+    '.print-sub{font-size:10pt;color:#444;margin:0}'+
+    '.print-meta{display:flex;gap:0;margin-bottom:10px;font-size:10.5pt;border:1px solid #ccc;border-radius:4px;overflow:hidden}'+
+    '.print-meta-cell{flex:1;padding:5px 10px;border-right:1px solid #ccc}'+
+    '.print-meta-cell:last-child{border-right:none}'+
+    '.print-meta-label{font-size:8.5pt;color:#666;display:block;margin-bottom:1px}'+
+    '.print-meta-val{font-weight:700}'+
+    'table{width:100%;border-collapse:collapse;font-size:9.5pt;margin-bottom:10px}'+
+    'th{background:#cc0000;color:#fff;padding:5px 5px;font-weight:700;border:1px solid #a00;text-align:left;font-size:9pt;white-space:nowrap}'+
+    'td{padding:4px 5px;border:1px solid #ddd;vertical-align:middle}'+
+    'tbody tr:nth-child(even){background:#fafafa}'+
+    'tfoot td{background:#f0f0f0;font-weight:700;border-top:2px solid #aaa}'+
+    '.st-ok{color:#1a6b3a;font-weight:600}'+
+    '.st-ng{color:#cc0000;font-weight:600}'+
+    '.num{text-align:right;font-variant-numeric:tabular-nums}'+
+    '.center{text-align:center}'+
+    '.print-progress{font-size:10.5pt;margin-bottom:8px;color:#444}'+
+    '.print-sign{display:grid;grid-template-columns:repeat(4,1fr);margin-top:44px;gap:12px}'+
+    '.print-sign-box{text-align:center;font-size:10pt}'+
+    '.print-sign-line{border-top:1px solid #333;margin:36px 8px 6px}'+
+    'hr{border:none;border-top:1px dashed #bbb;margin:20px 0}'+
     '</style>';
   var win = window.open('','_blank','width=900,height=700');
   if(!win){ toast('⚠️ กรุณาอนุญาต popup ในบราวเซอร์แล้วลองใหม่'); return; }
