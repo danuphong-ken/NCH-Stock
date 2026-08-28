@@ -374,10 +374,6 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
           <input type="number" id="p-price" placeholder="ราคา (บาท)" step="0.01" min="0" style="flex:1">
           <span style="display:flex;align-items:center;font-size:13px;color:#888;padding:0 6px">บาท</span>
         </div>
-        <div class="inp-group">
-          <input type="number" id="p-balance" placeholder="ยอดคงเหลือ (ระบบบัญชี)" step="0.01" min="0" style="flex:1">
-          <span style="display:flex;align-items:center;font-size:13px;color:#888;padding:0 6px">ชิ้น</span>
-        </div>
         <div class="btn-row">
           <button class="btn btn-primary" onclick="saveProd()" id="btn-save-prod">💾 บันทึก</button>
           <button class="btn btn-outline" onclick="clearProdForm()">✖ ล้าง</button>
@@ -626,6 +622,9 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
           </label>
         </div>
         <div id="import-branch-bal-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
+        <button onclick="clearBranchBal()" class="btn" style="margin-top:8px;background:#fff3cd;color:#856404;border:1px solid #ffc107;font-size:13px">
+          🗑️ ล้างยอดคงเหลือทั้งหมด (รีเซ็ตเป็น 0)
+        </button>
       </div>
 
       <!-- ── อัปเดตยอดขายระหว่างวัน ── -->
@@ -697,6 +696,12 @@ var pendingBC = '', camTarget = 'count', contMode = false;
 function getBal(bc){
   // ถ้ายังไม่มียอดสาขา → แสดง 0 (ไม่ fallback ไป products.balance)
   return branchBal[bc] !== undefined ? branchBal[bc] : 0;
+}
+function clearBranchBal(){
+  if(!confirm('ล้างยอดคงเหลือทั้งหมดให้เป็น 0?\n\nยอดคงเหลือในหน้านับสต็อกจะแสดงเป็น 0 จนกว่าจะ import ใหม่')) return;
+  branchBal = {};
+  renderCounts();
+  toast('🗑️ ล้างยอดคงเหลือแล้ว — แสดงเป็น 0 ทุกรายการ');
 }
 async function loadBranchBalance(branch, date){
   branchBal = {};
@@ -775,13 +780,16 @@ async function showApp(){
   // ─── Restore session after page refresh ───
   var savedSessId = localStorage.getItem('nch_session_id');
   if(savedSessId){
-    var { data: sessRow, error: sessErr } = await supabase.from('count_sessions')
-      .select('*').eq('id', savedSessId).single();
+    var { data: sessArr0, error: sessErr } = await supabase.from('count_sessions')
+      .select('*').eq('id', savedSessId).limit(1);
+    var sessRow = sessArr0 && sessArr0[0];
     if(!sessErr && sessRow && sessRow.status === 'in_progress'){
       var { data: itemRows } = await supabase.from('count_items')
         .select('*').eq('session_id', savedSessId).order('scanned_at', { ascending: false });
       currentSession = sessRow;
       counts = itemRows || [];
+      // Bug 3: เริ่ม realtime sync หลัง restore
+      subscribeCountItems(savedSessId);
       updateSessionUI();
       renderCounts();
       await loadBranchBalance(sessRow.branch, sessRow.count_date);
@@ -873,13 +881,12 @@ async function saveProd(){
   var name  = document.getElementById('p-name').value.trim();
   var unit  = document.getElementById('p-unit').value.trim() || 'ชิ้น';
   var price   = parseFloat(document.getElementById('p-price').value)   || 0;
-  var balance = parseFloat(document.getElementById('p-balance').value) || 0;
   document.getElementById('prod-err').textContent = '';
   if(!bc){ document.getElementById('prod-err').textContent = 'กรุณากรอก Barcode'; return; }
   if(!name){ document.getElementById('prod-err').textContent = 'กรุณากรอกชื่อสินค้า'; return; }
 
   setSyncDot('syncing');
-  var row = { barcode: bc, product_code: code, name, unit, price, balance, created_by: currentUser.id };
+  var row = { barcode: bc, product_code: code, name, unit, price, created_by: currentUser.id };
   var { error } = await supabase.from('products').upsert(row, { onConflict: 'barcode' });
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ บันทึกไม่ได้: '+error.message); return; }
@@ -905,13 +912,12 @@ function editProd(bc){
   document.getElementById('p-name').value  = p.name || '';
   document.getElementById('p-unit').value  = p.unit || '';
   document.getElementById('p-price').value   = p.price   || '';
-  document.getElementById('p-balance').value = p.balance || '';
   go('products');
   document.getElementById('p-name').focus();
 }
 
 function clearProdForm(){
-  ['p-bc','p-code','p-name','p-unit','p-price','p-balance'].forEach(function(id){ document.getElementById(id).value=''; });
+  ['p-bc','p-code','p-name','p-unit','p-price'].forEach(function(id){ document.getElementById(id).value=''; });
   document.getElementById('prod-err').textContent='';
 }
 
@@ -965,7 +971,6 @@ function renderProds(){
   if(!list.length){ el.innerHTML='<div class="empty"><div class="em-icon">🏷️</div><p>ไม่มีสินค้า</p></div>'; return; }
   el.innerHTML = list.map(function(p){
     var priceStr   = p.price   ? parseFloat(p.price).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2})+' บ.' : '—';
-    var balanceStr = p.balance ? parseFloat(p.balance).toLocaleString()+'  ชิ้น' : '—';
     return '<div class="prod-item">'+
       '<div style="flex:1">'+
       '<div class="prod-name">'+esc(p.name)+'</div>'+
@@ -974,7 +979,6 @@ function renderProds(){
       '<div style="display:flex;gap:8px;margin-top:2px;flex-wrap:wrap">'+
       '<span style="font-size:11px;color:#6c3483;background:#f0e8ff;border-radius:10px;padding:2px 8px">'+esc(p.unit||'ชิ้น')+'</span>'+
       '<span style="font-size:11px;color:#27ae60;background:#eafaf1;border-radius:10px;padding:2px 8px">'+priceStr+'</span>'+
-      '<span style="font-size:11px;color:#1a6e9e;background:#e8f4fd;border-radius:10px;padding:2px 8px">คงเหลือ: '+balanceStr+'</span>'+
       '</div>'+
       '</div>'+
       '<div class="prod-actions">'+
@@ -1006,6 +1010,8 @@ async function startSession(){
   localStorage.setItem('nch_session_id', data.id);
   updateSessionUI();
   renderCounts();
+  // Bug 3: เริ่ม realtime sync
+  subscribeCountItems(data.id);
   // โหลด balance ของสาขานี้ (ตาม branch + วันที่นับ)
   await loadBranchBalance(branch, date);
   // Pre-fill counter name in item form
@@ -1018,13 +1024,21 @@ async function endSession(){
   if(!currentSession) return;
   if(!confirm('จบรอบการนับ?')) return;
   setSyncDot('syncing');
-  var { error } = await supabase.from('count_sessions').update({
-    status: 'completed', completed_at: new Date().toISOString()
-  }).eq('id', currentSession.id);
+  // Bug 5: guard ด้วย .eq('status','in_progress') — ป้องกัน 2 คนกดจบพร้อมกัน
+  var { data: updRows, error } = await supabase.from('count_sessions').update({
+    status: 'completed', completed_at: new Date().toISOString(), recount_by: null
+  }).eq('id', currentSession.id).eq('status', 'in_progress').select('id');
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ '+error.message); return; }
+  if(!updRows || !updRows.length){
+    toast('⚠️ รอบนี้ถูกจบไปแล้วโดยผู้ใช้อื่น');
+    currentSession.status = 'completed';
+    unsubscribeCountItems();
+    updateSessionUI(); return;
+  }
   currentSession.status = 'completed';
   localStorage.removeItem('nch_session_id');
+  unsubscribeCountItems();
   updateSessionUI();
   toast('✅ จบรอบนับแล้ว — Export Excel...');
   branchBal = {};
@@ -1064,6 +1078,8 @@ function updateSessionUI(){
 // ═══════════════════════════════════════
 //  Count Items (DB)
 // ═══════════════════════════════════════
+var _editingCountId = null; // Bug 4: ID รายการที่กำลังแก้ไข (ไม่ลบก่อน save)
+
 async function addCount(bc, qty, soldQty, counterName){
   if(!currentSession || currentSession.status !== 'in_progress'){ toast('⚠️ ไม่มี session ที่ active'); return; }
   qty = parseInt(qty) || 0;
@@ -1071,58 +1087,63 @@ async function addCount(bc, qty, soldQty, counterName){
   counterName = counterName || '';
   var p = prods[bc];
 
-  // ─── Issue 1.3: ถ้า barcode นี้มีอยู่แล้วใน counts → UPDATE แทน INSERT ───
-  var existing = counts.find(function(c){ return c.barcode === bc; });
-  if(existing){
-    // โหมดนับซ่อม: แทนที่ quantity ทั้งหมด (REPLACE) ไม่ใช่สะสม
-    var newQty  = _recountMode ? qty : existing.quantity + qty;
-    var newSold = _recountMode
-      ? (soldQty > 0 ? soldQty : parseFloat(existing.sold_qty)||0)
-      : (parseFloat(existing.sold_qty)||0) + soldQty;
-    var newCtr  = counterName || existing.counter_name || '';
-    // ถ้านับซ่อม → ต่อท้ายชื่อว่า [ซ่อม]
-    if(_recountMode && counterName && !counterName.includes('[ซ่อม]')) newCtr = counterName + ' [ซ่อม]';
+  // Bug 4: กำลังแก้ไขรายการที่มีอยู่ → UPDATE โดยตรง ไม่ลบก่อน
+  if(_editingCountId){
+    var editId = _editingCountId;
+    _editingCountId = null;
+    var edCtr = counterName || '';
+    if(_recountMode && counterName && !counterName.includes('[ซ่อม]')) edCtr = counterName + ' [ซ่อม]';
     setSyncDot('syncing');
-    var { data: upData, error: upErr } = await supabase.from('count_items')
-      .update({ quantity: newQty, sold_qty: newSold, counter_name: newCtr })
-      .eq('id', existing.id).select().single();
-    setSyncDot(upErr ? 'off' : 'on');
-    if(upErr){ toast('❌ อัปเดตไม่ได้: '+upErr.message); return; }
-    var idx = counts.indexOf(existing);
-    counts[idx] = upData;
-    renderCounts();
-    updateSelCounted(bc);
-    toast((_recountMode ? '🔄 ซ่อม: ' : '✅ เพิ่ม ')+qty+' ชิ้น → รวม '+newQty+' × '+(p?p.name:bc));
-    return upData;
+    var { data: edData, error: edErr } = await supabase.from('count_items')
+      .update({ quantity: qty, sold_qty: soldQty, counter_name: edCtr })
+      .eq('id', editId).select().single();
+    setSyncDot(edErr ? 'off' : 'on');
+    if(edErr){ toast('❌ แก้ไขไม่ได้: '+edErr.message); return; }
+    var edIdx = counts.findIndex(function(c){ return c.id === editId; });
+    if(edIdx > -1) counts[edIdx] = edData; else counts.unshift(edData);
+    renderCounts(); updateSelCounted(bc);
+    toast('✏️ แก้ไขแล้ว: '+qty+' ชิ้น × '+(p?p.name:bc));
+    return edData;
   }
 
-  var item = {
-    session_id:   currentSession.id,
-    barcode:      bc,
-    product_code: p ? (p.product_code||'') : '',
-    product_name: p ? p.name : '(ไม่ทราบชื่อ)',
-    unit:         p ? p.unit : 'ชิ้น',
-    quantity:     qty,
-    sold_qty:     soldQty,
-    counter_name: counterName,
-    scanned_at:   new Date().toISOString()
-  };
-  setSyncDot('syncing');
-  var { data, error } = await supabase.from('count_items').insert(item).select().single();
-  // ถ้า sold_qty column ยังไม่มี → retry โดยไม่ส่ง sold_qty
-  if(error && error.message && error.message.toLowerCase().includes('sold_qty')){
-    delete item.sold_qty;
-    var r2 = await supabase.from('count_items').insert(item).select().single();
-    if(r2.error){ setSyncDot('off'); toast('❌ '+r2.error.message); return; }
-    data = r2.data; error = null;
+  // Bug 2: โหมดนับซ่อม → REPLACE ค่าเดิม (ไม่บวกสะสม)
+  if(_recountMode){
+    var rcExist = counts.find(function(c){ return c.barcode === bc; });
+    var rcSold = soldQty > 0 ? soldQty : (rcExist ? parseFloat(rcExist.sold_qty)||0 : 0);
+    var rcCtr  = counterName || (rcExist ? rcExist.counter_name : '') || '';
+    if(counterName && !counterName.includes('[ซ่อม]')) rcCtr = counterName + ' [ซ่อม]';
+    setSyncDot('syncing');
+    var { data: rcData, error: rcErr } = await supabase.from('count_items')
+      .update({ quantity: qty, sold_qty: rcSold, counter_name: rcCtr })
+      .eq('session_id', currentSession.id).eq('barcode', bc)
+      .select().single();
+    setSyncDot(rcErr ? 'off' : 'on');
+    if(rcErr){ toast('❌ อัปเดตไม่ได้: '+rcErr.message); return; }
+    var rcIdx = counts.findIndex(function(c){ return c.barcode === bc; });
+    if(rcIdx > -1) counts[rcIdx] = rcData; else counts.unshift(rcData);
+    renderCounts(); updateSelCounted(bc);
+    toast('🔄 ซ่อม: '+qty+' ชิ้น → รวม '+rcData.quantity+' × '+(p?p.name:bc));
+    return rcData;
   }
-  setSyncDot(error ? 'off' : 'on');
-  if(error){ toast('❌ บันทึกไม่ได้: '+error.message); return; }
-  counts.unshift(data);
-  renderCounts();
-  updateSelCounted(bc);
-  toast('✅ นับ '+qty+' ขาย '+soldQty+' × '+(p?p.name:bc));
-  return data;
+
+  // Bug 1+2: Normal mode → atomic upsert ผ่าน RPC (ป้องกัน duplicate + lost update)
+  setSyncDot('syncing');
+  var { data: rpcRows, error: rpcErr } = await supabase.rpc('increment_count_qty', {
+    p_session_id: currentSession.id,
+    p_barcode:    bc,
+    p_delta:      qty,
+    p_sold_delta: soldQty,
+    p_counter:    counterName || null
+  });
+  setSyncDot(rpcErr ? 'off' : 'on');
+  if(rpcErr){ toast('❌ บันทึกไม่ได้: '+rpcErr.message); return; }
+  var newRow = rpcRows && rpcRows[0];
+  if(!newRow){ toast('❌ ไม่ได้รับข้อมูลกลับจาก DB'); return; }
+  var exIdx = counts.findIndex(function(c){ return c.barcode === bc; });
+  if(exIdx > -1) counts[exIdx] = newRow; else counts.unshift(newRow);
+  renderCounts(); updateSelCounted(bc);
+  toast('✅ นับ '+qty+' ชิ้น → รวม '+newRow.quantity+' × '+(p?p.name:bc));
+  return newRow;
 }
 
 async function removeCountItem(id){
@@ -1167,7 +1188,29 @@ function renderCounts(){
     el.innerHTML='<div class="empty"><div class="em-icon">🔍</div><p>ไม่พบรายการที่ตรงกับ "'+esc(q)+'"</p></div>';
     return;
   }
-  el.innerHTML = filtered.map(function(c){
+  // โหมดนับซ่อม: prepend virtual rows สำหรับสินค้าที่ยังไม่เคยสแกนแต่ต้องนับซ่อม
+  var virtualHtml = '';
+  if(_recountMode && !q){
+    var countedSet = {};
+    counts.forEach(function(c){ if(c.barcode) countedSet[c.barcode] = true; });
+    var missingBcs = Object.keys(_recountBarcodes).filter(function(bc){ return !countedSet[bc]; });
+    virtualHtml = missingBcs.map(function(bc){
+      var p   = prods[bc] || {};
+      var bal = getBal(bc);
+      return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto;border-left:3px solid #e74c3c;background:#fff5f5;">'+
+        '<div><div class="cnt-name">'+esc(p.name||bc)+
+        '<span class="recount-item-badge" style="background:#e74c3c">⚠️ ยังไม่ได้นับ</span></div>'+
+        '<div class="cnt-bc">'+esc(bc)+'</div></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">คงเหลือ<br><b style="font-size:14px;color:#555">'+bal+'</b></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">นับจริง<br><b style="font-size:14px;color:#aaa">0</b></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">ขาย<br><b style="font-size:14px;color:#aaa">—</b></div>'+
+        '<div style="min-width:36px;text-align:center;font-weight:700;font-size:14px;color:#e74c3c">'+(-bal)+'</div>'+
+        '<div></div><div></div>'+
+        '</div>';
+    }).join('');
+  }
+
+  el.innerHTML = virtualHtml + filtered.map(function(c){
     var p = prods[c.barcode] || {};
     var bal = getBal(c.barcode);
     var sold = parseFloat(c.sold_qty)||0;
@@ -1219,8 +1262,8 @@ async function editCountItem(id){
   document.getElementById('qty-input').value = c.quantity;
   document.getElementById('sold-input').value = c.sold_qty||0;
   document.getElementById('counter-name-input').value = c.counter_name||'';
-  // ลบรายการเดิมก่อน (จะบันทึกใหม่)
-  await removeCountItem(id);
+  // Bug 4: เก็บ ID ไว้ให้ addCount() UPDATE แทน — ไม่ลบ row ก่อน Save
+  _editingCountId = id;
   // เลื่อนขึ้นบน
   document.getElementById('scan-card').scrollIntoView({behavior:'smooth',block:'start'});
   document.getElementById('qty-input').focus();
@@ -1299,15 +1342,65 @@ function salesAutoRefresh(){
 var _recountMode   = false;   // true = กำลังนับซ่อม
 var _recountBarcodes = {};    // barcode → true ถ้าต้องซ่อม
 
+// Bug 3: Realtime subscription สำหรับ count_items ของ session ปัจจุบัน
+var _rtChannel = null;
+
+function subscribeCountItems(sessionId){
+  if(_rtChannel){ supabase.removeChannel(_rtChannel); _rtChannel = null; }
+  _rtChannel = supabase
+    .channel('ci_' + sessionId)
+    .on('postgres_changes', {
+      event: '*', schema: 'public', table: 'count_items',
+      filter: 'session_id=eq.' + sessionId
+    }, function(payload){
+      var ev = payload.eventType, nr = payload.new, or = payload.old;
+      if(ev === 'INSERT'){
+        // ถ้า ID ยังไม่อยู่ใน counts (เป็น row จากผู้ใช้อื่น) → เพิ่มเข้า
+        if(!counts.find(function(c){ return c.id === nr.id; })){
+          counts.unshift(nr); renderCounts();
+        }
+      } else if(ev === 'UPDATE'){
+        var i = counts.findIndex(function(c){ return c.id === nr.id; });
+        if(i > -1){ counts[i] = nr; } else { counts.unshift(nr); }
+        renderCounts();
+      } else if(ev === 'DELETE'){
+        counts = counts.filter(function(c){ return c.id !== or.id; });
+        renderCounts();
+      }
+    })
+    .subscribe();
+}
+
+function unsubscribeCountItems(){
+  if(_rtChannel){ supabase.removeChannel(_rtChannel); _rtChannel = null; }
+}
+
 async function startRecount(sessionId, branch, date){
   if(!confirm('เริ่มนับซ่อมสำหรับสาขา "'+branch+'" วันที่ '+date+' ?\n\nระบบจะเปิดรอบการนับสำหรับรายการที่ผลต่าง ≠ 0')) return;
 
-  // Load the session's count_items to find diff ≠ 0
+  // Load session + count_items แยก query (หลีกเลี่ยง PostgREST embed error)
   setSyncDot('syncing');
-  var { data: sessData, error: sessErr } = await supabase.from('count_sessions')
-    .select('*, count_items(*)').eq('id', sessionId).single();
-  setSyncDot(sessErr ? 'off' : 'on');
-  if(sessErr){ toast('❌ '+sessErr.message); return; }
+  var { data: sessArr, error: sessErr } = await supabase.from('count_sessions')
+    .select('*').eq('id', sessionId).limit(1);
+  if(sessErr){ setSyncDot('off'); toast('❌ '+sessErr.message); return; }
+  var sessData = sessArr && sessArr[0];
+  if(!sessData){ setSyncDot('off'); toast('❌ ไม่พบ session'); return; }
+
+  // Bug 6: ตรวจสอบ recount_by lock — ป้องกัน 2 คนนับซ่อมพร้อมกัน
+  var myId = currentUser ? (currentUser.email || currentUser.id) : 'unknown';
+  if(sessData.recount_by && sessData.recount_by !== myId){
+    setSyncDot('on');
+    toast('⚠️ '+sessData.recount_by+' กำลังนับซ่อมอยู่ — รอให้เสร็จก่อน');
+    return;
+  }
+  // Set recount_by lock ใน DB
+  await supabase.from('count_sessions').update({ recount_by: myId }).eq('id', sessionId);
+
+  var { data: rcItems, error: rcItemErr } = await supabase.from('count_items')
+    .select('*').eq('session_id', sessionId);
+  setSyncDot(rcItemErr ? 'off' : 'on');
+  if(rcItemErr){ toast('❌ '+rcItemErr.message); return; }
+  sessData.count_items = rcItems || [];
 
   // Build rptBal for this branch+date
   var rBal = {};
@@ -1324,6 +1417,14 @@ async function startRecount(sessionId, branch, date){
     aggMap[key].sold_qty  += parseFloat(i.sold_qty)||0;
   });
 
+  // รวมสินค้าที่มียอดคงเหลือใน product_balances แต่ยังไม่มี count_items
+  // (diff = 0+0 - balance ≠ 0 → ต้องนับซ่อม)
+  Object.keys(rBal).forEach(function(bc){
+    if(!aggMap[bc] && rBal[bc] > 0){
+      aggMap[bc] = { barcode: bc, quantity: 0, sold_qty: 0 };
+    }
+  });
+
   var diffBarcodes = {};
   Object.values(aggMap).forEach(function(a){
     var bal  = rBal[a.barcode] || 0;
@@ -1335,7 +1436,7 @@ async function startRecount(sessionId, branch, date){
     toast('✅ ไม่มีรายการที่ผลต่าง ≠ 0 ไม่ต้องนับซ่อม'); return;
   }
 
-  // Re-open session
+  // Re-open session (recount_by ถูก set ไปแล้วข้างบน)
   var { error: reErr } = await supabase.from('count_sessions')
     .update({ status: 'in_progress' }).eq('id', sessionId);
   if(reErr){ toast('❌ เปิด session ไม่ได้: '+reErr.message); return; }
@@ -1368,10 +1469,14 @@ async function startRecount(sessionId, branch, date){
   toast('🔄 เริ่มนับซ่อม '+rcCount+' รายการ');
 }
 
-function exitRecountMode(){
+async function exitRecountMode(){
   _recountMode     = false;
   _recountBarcodes = {};
   document.getElementById('recount-banner').style.display = 'none';
+  // Bug 6: ปลด recount_by lock ใน DB
+  if(currentSession){
+    await supabase.from('count_sessions').update({ recount_by: null }).eq('id', currentSession.id);
+  }
   renderCounts();
   toast('✅ ออกจากโหมดนับซ่อมแล้ว');
 }
@@ -3047,6 +3152,8 @@ async function resumeSession(i){
   counts = data || [];
   localStorage.setItem('nch_session_id', s.id);
   await loadBranchBalance(s.branch, s.count_date);
+  // Bug 3: เริ่ม realtime sync
+  subscribeCountItems(s.id);
   updateSessionUI();
   renderCounts();
   go('count');
