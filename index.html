@@ -422,7 +422,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
       <div id="report-list">
         <div class="empty"><div class="em-icon">📊</div><p>เลือกสาขา/วันที่เพื่อดูรายงาน</p></div>
       </div>
-      <div style="margin-top:14px;font-size:13px;font-weight:700;color:#6c3483;margin-bottom:8px" id="cash-rpt-hd" style="display:none">💵 รายงานเงินสด</div>
+      <div id="cash-rpt-hd" style="display:none;margin-top:14px;font-size:13px;font-weight:700;color:#6c3483;margin-bottom:8px">💵 รายงานเงินสด</div>
       <div id="cash-report-list"></div>
     </div>
 
@@ -571,7 +571,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <div id="sales-list">
           <div class="empty"><div class="em-icon">💹</div><p>ยังไม่มีข้อมูลยอดขาย</p></div>
         </div>
-        <div id="sales-total-bar" style="display:none;margin-top:10px;padding:10px 14px;background:#e8f8ef;border-radius:8px;font-weight:700;color:#1a6b3a;display:flex;justify-content:space-between">
+        <div id="sales-total-bar" style="display:none;margin-top:10px;padding:10px 14px;background:#e8f8ef;border-radius:8px;font-weight:700;color:#1a6b3a;justify-content:space-between">
           <span>รวมยอดขายทั้งหมด</span>
           <span id="sales-total-qty">0 ชิ้น</span>
         </div>
@@ -769,6 +769,8 @@ async function showApp(){
   document.getElementById('rpt-date').value = today;
   var bbd = document.getElementById('branch-bal-import-date');
   if(bbd) bbd.value = today;
+  var sid = document.getElementById('sales-import-date');
+  if(sid) sid.value = today;
   renderProds();
   // ─── Restore session after page refresh ───
   var savedSessId = localStorage.getItem('nch_session_id');
@@ -1024,9 +1026,7 @@ async function endSession(){
   currentSession.status = 'completed';
   localStorage.removeItem('nch_session_id');
   updateSessionUI();
-  toast('✅ จบรอบนับแล้ว — บันทึกยอดสาขา & Export Excel...');
-  // บันทึก balance แยกต่อสาขา
-  await saveBranchBalance(currentSession.branch, counts, currentSession.count_date);
+  toast('✅ จบรอบนับแล้ว — Export Excel...');
   branchBal = {};
   // Auto-export Excel for this session
   setTimeout(function(){ autoExportSession(currentSession, counts); }, 500);
@@ -1076,7 +1076,9 @@ async function addCount(bc, qty, soldQty, counterName){
   if(existing){
     // โหมดนับซ่อม: แทนที่ quantity ทั้งหมด (REPLACE) ไม่ใช่สะสม
     var newQty  = _recountMode ? qty : existing.quantity + qty;
-    var newSold = _recountMode ? soldQty : (parseFloat(existing.sold_qty)||0) + soldQty;
+    var newSold = _recountMode
+      ? (soldQty > 0 ? soldQty : parseFloat(existing.sold_qty)||0)
+      : (parseFloat(existing.sold_qty)||0) + soldQty;
     var newCtr  = counterName || existing.counter_name || '';
     // ถ้านับซ่อม → ต่อท้ายชื่อว่า [ซ่อม]
     if(_recountMode && counterName && !counterName.includes('[ซ่อม]')) newCtr = counterName + ' [ซ่อม]';
@@ -1191,7 +1193,7 @@ function renderCounts(){
   salesAutoRefresh();
 }
 
-function editCountItem(id){
+async function editCountItem(id){
   var c = counts.find(function(x){ return x.id===id; });
   if(!c) return;
   // โหลดสินค้าขึ้น scan card
@@ -1218,7 +1220,7 @@ function editCountItem(id){
   document.getElementById('sold-input').value = c.sold_qty||0;
   document.getElementById('counter-name-input').value = c.counter_name||'';
   // ลบรายการเดิมก่อน (จะบันทึกใหม่)
-  removeCountItem(id);
+  await removeCountItem(id);
   // เลื่อนขึ้นบน
   document.getElementById('scan-card').scrollIntoView({behavior:'smooth',block:'start'});
   document.getElementById('qty-input').focus();
@@ -1277,7 +1279,7 @@ function renderSalesList(){
       +'</div>';
   }).join('');
 
-  badge.textContent = allItems.length;
+  badge.textContent = items.length;
   if(totalSold > 0){
     if(totalBar) totalBar.style.display = 'flex';
     if(totalQtyEl) totalQtyEl.textContent = totalSold.toLocaleString() + ' ชิ้น';
@@ -1535,6 +1537,8 @@ async function processSalesRows(raw, input, branch, date){
     renderCounts();
     renderSalesList();
   }
+  // Refresh report tab if it's currently open
+  if(typeof activePage !== 'undefined' && activePage === 'report') loadReport();
   input.value='';
 }
 
@@ -1672,7 +1676,9 @@ function confirmPhoto(){
     else { go('products'); document.getElementById('p-code').focus(); toast('📷 Barcode: '+bc+' — กรอกรหัส/ชื่อสินค้า'); }
   } else {
     var qty = parseInt(document.getElementById('qty-input').value) || 1;
-    addCount(bc, qty);
+    var _sold = parseInt(document.getElementById('sold-input').value)||0;
+    var _cname = (document.getElementById('counter-name-input')||{}).value||'';
+    addCount(bc, qty, _sold, _cname);
     if(contMode){ setTimeout(function(){ document.getElementById('photo-count-cont').click(); }, 400); }
   }
   pendingBC = '';
@@ -1685,15 +1691,6 @@ async function loadReport(){
   var branch = document.getElementById('rpt-branch').value;
   var date   = document.getElementById('rpt-date').value;
 
-  // โหลด balance สาขาที่ report (ตรง branch + วันที่)
-  var rptBal = {};
-  if(branch && date){
-    var { data: rbData } = await supabase.from('product_balances')
-      .select('barcode,balance').eq('branch', branch).eq('balance_date', date);
-    if(rbData) rbData.forEach(function(r){ rptBal[r.barcode] = parseFloat(r.balance)||0; });
-  }
-  var getRptBal = function(bc){ return rptBal[bc] !== undefined ? rptBal[bc] : 0; };
-
   setSyncDot('syncing');
   // ดึงทั้ง completed และ in_progress
   var q = supabase.from('count_sessions').select('*, count_items(*)').order('count_date',{ascending:false});
@@ -1703,6 +1700,22 @@ async function loadReport(){
   var { data, error } = await q;
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ '+error.message); return; }
+
+  // โหลด balance ต่อ session (รองรับทั้งกรณีกรองสาขาเดียวและทุกสาขา)
+  var sessionBalMap = {}; // sessionId → { barcode → balance }
+  var bdProcessed = {};
+  for(var _si=0; _si<(data||[]).length; _si++){
+    var _s = data[_si];
+    var _bdKey = _s.branch+'|'+_s.count_date;
+    if(!bdProcessed[_bdKey]){
+      var { data: _bd } = await supabase.from('product_balances')
+        .select('barcode,balance').eq('branch', _s.branch).eq('balance_date', _s.count_date);
+      var _bm = {};
+      if(_bd) _bd.forEach(function(r){ _bm[r.barcode] = parseFloat(r.balance)||0; });
+      bdProcessed[_bdKey] = _bm;
+    }
+    sessionBalMap[_s.id] = bdProcessed[_bdKey];
+  }
 
   var totalProds = Object.keys(prods).length;
 
@@ -1720,6 +1733,8 @@ async function loadReport(){
   if(!totalSess){ el.innerHTML='<div class="empty"><div class="em-icon">📊</div><p>ไม่มีข้อมูล</p></div>'; return; }
 
   el.innerHTML = (data||[]).map(function(s, si){
+    var _sessbal = sessionBalMap[s.id] || {};
+    var getRptBal = function(bc){ return _sessbal[bc] !== undefined ? _sessbal[bc] : 0; };
     var items = s.count_items || [];
     var isDone = s.status === 'completed';
 
@@ -2157,7 +2172,7 @@ function importBalanceCSV(input){
 }
 
 async function processBalanceRows(raw, input, fmt){
-  var statusEl = document.getElementById('import-bal-status');
+  var statusEl = document.getElementById('import-status');
   statusEl.style.color = '#555';
   statusEl.textContent = 'กำลังอ่านข้อมูล...';
 
@@ -2906,20 +2921,26 @@ async function loadHistoryItems(i){
     .select('*').eq('session_id', s.id);
   if(error){ el.textContent = '❌ '+error.message; return; }
   s._items = data || [];
-  var agg = buildAggFromItems(s._items);
+  var { data: hbd2 } = await supabase.from('product_balances')
+    .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
+  var hBal2 = {};
+  if(hbd2) hbd2.forEach(function(r){ hBal2[r.barcode] = parseFloat(r.balance)||0; });
+  var agg = buildAggFromItems(s._items, hBal2);
   var totalQty = agg.reduce(function(a,r){ return a+r.quantity; },0);
-  el.textContent = 'SKU: '+agg.length+' รายการ | รวม: '+totalQty+' ชิ้น';
+  var totalDiff = agg.reduce(function(a,r){ return a + ((r.quantity+(r.sold_qty||0)) - (r.balance||0)); },0);
+  el.textContent = 'SKU: '+agg.length+' รายการ | รวม: '+totalQty+' ชิ้น | ผลต่าง: '+(totalDiff>=0?'+':'')+totalDiff;
 }
 
-function buildAggFromItems(items){
+function buildAggFromItems(items, balMap){
   var aggMap = {};
   (items||[]).forEach(function(i){
     var key = i.barcode || i.product_name || '?';
     if(!aggMap[key]){
       var prod = prods[i.barcode] || {};
+      var bal = (balMap && balMap[i.barcode] !== undefined) ? balMap[i.barcode] : parseFloat(prod.balance)||0;
       aggMap[key] = { barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
         product_name: i.product_name||'', unit: i.unit||prod.unit||'ชิ้น',
-        quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0, balance: parseFloat(prod.balance)||0 };
+        quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0, balance: bal };
     }
     aggMap[key].quantity += i.quantity;
     aggMap[key].sold_qty += parseFloat(i.sold_qty)||0;
@@ -2937,7 +2958,11 @@ async function exportHistoryExcel(i){
     if(error){ toast('❌ '+error.message); return; }
     s._items = data || [];
   }
-  buildAndDownloadExcel(s, s._items);
+  var { data: hbd } = await supabase.from('product_balances')
+    .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
+  var hBalMap = {};
+  if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
+  buildAndDownloadExcel(s, s._items, hBalMap);
 }
 
 async function exportHistoryCSV(i){
@@ -2948,12 +2973,16 @@ async function exportHistoryCSV(i){
     if(error){ toast('❌ '+error.message); return; }
     s._items = data || [];
   }
-  buildAndDownloadCSV(s, s._items);
+  var { data: hbd } = await supabase.from('product_balances')
+    .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
+  var hBalMap = {};
+  if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
+  buildAndDownloadCSV(s, s._items, hBalMap);
 }
 
-function buildAndDownloadExcel(s, items){
+function buildAndDownloadExcel(s, items, balMap){
   if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
-  var agg = buildAggFromItems(items);
+  var agg = buildAggFromItems(items, balMap);
   var thaiDate = (s.count_date||'').split('-').reverse().join('/');
   var wsData = [];
   wsData.push(['ใบรายงานการตรวจนับสินค้า : Brand NCH','','','','','','','']);
@@ -2991,8 +3020,8 @@ function buildAndDownloadExcel(s, items){
   toast('📥 ดาวน์โหลด: '+filename);
 }
 
-function buildAndDownloadCSV(s, items){
-  var agg = buildAggFromItems(items);
+function buildAndDownloadCSV(s, items, balMap){
+  var agg = buildAggFromItems(items, balMap);
   var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number','ชื่อสินค้า','ยอดคงเหลือ','นับจริง','จำนวนขาย','ผลต่าง']];
   agg.forEach(function(r, idx){
     var diff = (r.quantity + (r.sold_qty||0)) - (r.balance||0);
@@ -3017,6 +3046,7 @@ async function resumeSession(i){
   currentSession = s;
   counts = data || [];
   localStorage.setItem('nch_session_id', s.id);
+  await loadBranchBalance(s.branch, s.count_date);
   updateSessionUI();
   renderCounts();
   go('count');
@@ -3112,10 +3142,10 @@ async function loadCashReport(){
 // ═══════════════════════════════════════
 //  PDF PRINT
 // ═══════════════════════════════════════
-function printStockReport(){
+async function printStockReport(){
   var data = window._rptData;
   if(!data||!data.length){ toast('⚠️ ไม่มีข้อมูล'); return; }
-  var agg = buildAggData();
+  var agg = await buildAggData();
   var html = agg.map(function(g){
     var s = g.session;
     var thaiDate = (s.count_date||'').split('-').reverse().join('/');
