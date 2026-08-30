@@ -218,6 +218,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
     <div class="header-right">
       <span class="sync-dot" id="sync-dot"></span>
       <span class="huser" id="huser-email"></span>
+      <button class="hbtn" id="refresh-btn" onclick="doRefreshAll()" title="รีเฟรชข้อมูลทั้งหมด">🔄</button>
       <button class="hbtn" onclick="doLogout()">ออก</button>
     </div>
   </div>
@@ -416,6 +417,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
           <option value="">ทุกสาขา</option>
         </select>
         <input type="date" id="rpt-date" onchange="loadReport()">
+        <button class="btn btn-primary btn-sm" onclick="doRefreshReport()" title="รีเฟรชรายงาน" id="rpt-refresh-btn">🔄 รีเฟรช</button>
         <button class="btn btn-outline btn-sm" onclick="exportCSV()">⬇️ CSV</button>
         <button class="btn btn-success btn-sm" onclick="exportExcel()">📥 Excel</button>
         <button class="btn btn-outline btn-sm" onclick="printStockReport()">🖨️ PDF</button>
@@ -674,25 +676,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 <div class="toast" id="toast"></div>
 
 <!-- COUNT LOG MODAL -->
-<div id="count-log-modal" onclick="if(event.target===this)closeCountLog()"
-  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;padding:20px;overflow-y:auto;display:none">
-  <div style="background:#fff;border-radius:16px;max-width:480px;margin:auto;padding:20px;box-shadow:0 8px 40px rgba(0,0,0,.2)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div>
-        <div id="log-modal-title" style="font-size:15px;font-weight:700;color:#6c3483">📋 ประวัติการนับ</div>
-        <div id="log-modal-bc" style="font-size:11px;color:#999;font-family:monospace;margin-top:2px"></div>
-      </div>
-      <button onclick="closeCountLog()" style="background:#f5f5f5;border:none;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer;line-height:1">✖</button>
-    </div>
-    <div id="log-action-area" style="display:none;gap:8px;margin-bottom:14px;justify-content:flex-end"></div>
-    <div id="count-log-list" style="max-height:55vh;overflow-y:auto">
-      <div style="text-align:center;padding:24px;color:#aaa">กำลังโหลด...</div>
-    </div>
-    <div id="log-modal-summary" style="margin-top:12px;padding:10px 14px;background:#f0e8ff;border-radius:10px;display:none">
-      รวมทั้งหมด: <b id="log-total" style="color:#6c3483"></b> ชิ้น จาก <b id="log-count"></b> ครั้ง
-    </div>
-  </div>
-</div>
+<!-- count-log-modal removed: history now shows inline -->
 
 <script>
 // ══════════════════════════════════════════════
@@ -858,6 +842,49 @@ async function doLogout(){
   currentUser = null; currentSession = null; prods = {}; counts = [];
   localStorage.removeItem('nch_session_id');
   showLoginPage();
+}
+
+// ── Refresh buttons ──────────────────────────────────────────────────────────
+async function doRefreshAll(){
+  var btn = document.getElementById('refresh-btn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳'; }
+  toast('🔄 รีเฟรชและตรวจสอบยอด...');
+  try {
+    await loadProducts();
+    if(currentSession){
+      var { data: items } = await supabase.from('count_items')
+        .select('*').eq('session_id', currentSession.id);
+      if(items){ counts = items; renderCounts(); }
+      // ── Recheck: ตรวจทุก barcode ว่า quantity ตรงกับผลรวม logs ──
+      await recomputeAllItems();
+    }
+    if(activePage === 'report') await loadReport();
+    toast('✅ รีเฟรชและตรวจสอบยอดเรียบร้อย');
+  } catch(e){
+    toast('⚠️ รีเฟรชไม่สำเร็จ: ' + (e.message || e));
+  }
+  if(btn){ btn.disabled = false; btn.textContent = '🔄'; }
+}
+
+// Recompute ทุก barcode ในรอบนับปัจจุบัน — แก้ยอดที่ผิดจากข้อมูลเก่า
+async function recomputeAllItems(){
+  if(!currentSession || !counts.length) return;
+  var barcodes = counts.map(function(c){ return c.barcode; });
+  for(var i=0; i<barcodes.length; i++){
+    await recomputeCountItem(barcodes[i]);
+  }
+}
+
+async function doRefreshReport(){
+  var btn = document.getElementById('rpt-refresh-btn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ โหลด...'; }
+  try {
+    await loadReport();
+    toast('✅ รีเฟรชรายงานเรียบร้อย');
+  } catch(e){
+    toast('⚠️ โหลดรายงานไม่สำเร็จ');
+  }
+  if(btn){ btn.disabled = false; btn.textContent = '🔄 รีเฟรช'; }
 }
 
 // ═══════════════════════════════════════
@@ -1152,39 +1179,48 @@ async function addCount(bc, qty, soldQty, counterName, location){
     return edData;
   }
 
-  // Bug 2: โหมดนับซ่อม → REPLACE ค่าเดิม (ไม่บวกสะสม)
+  // โหมดนับซ่อม → scan ครั้งแรกของ barcode: reset logs เป็น 0 ก่อน แล้ว accumulate
   if(_recountMode){
-    var rcExist = counts.find(function(c){ return c.barcode === bc; });
-    var rcSold = soldQty > 0 ? soldQty : (rcExist ? parseFloat(rcExist.sold_qty)||0 : 0);
-    var rcCtr  = counterName || (rcExist ? rcExist.counter_name : '') || '';
-    if(counterName && !counterName.includes('[ซ่อม]')) rcCtr = counterName + ' [ซ่อม]';
-    var rcUpd = { quantity: qty, sold_qty: rcSold, counter_name: rcCtr };
-    if(location !== null) rcUpd.location = location;
     setSyncDot('syncing');
-    // ลองอัปเดตก่อน — ถ้าไม่มี row (virtual) → INSERT แทน
-    var { data: rcData, error: rcErr } = await supabase.from('count_items')
-      .update(rcUpd)
-      .eq('session_id', currentSession.id).eq('barcode', bc)
-      .select().maybeSingle();
-    if(!rcErr && !rcData){
-      // virtual row → INSERT ใหม่
-      var rcIns = Object.assign({ session_id: currentSession.id, barcode: bc, product_name: (p ? p.name : null) }, rcUpd);
-      var { data: insRow, error: insErr } = await supabase.from('count_items').insert(rcIns).select().maybeSingle();
-      rcErr = insErr; rcData = insRow;
+    var isFirstRc = !_recountInitialized[bc];
+    if(isFirstRc){
+      // ครั้งแรก: ลบ logs เก่าทั้งหมดของ barcode นี้ แล้ว reset count_items → 0
+      _recountInitialized[bc] = true;
+      await supabase.from('count_logs').delete()
+        .eq('session_id', currentSession.id).eq('barcode', bc);
+      // Reset count_items quantity = 0 ใน local และ DB (ถ้า row มีอยู่)
+      var rcResetIdx = counts.findIndex(function(c){ return c.barcode === bc; });
+      if(rcResetIdx > -1){
+        counts[rcResetIdx] = Object.assign({}, counts[rcResetIdx], { quantity: 0 });
+        await supabase.from('count_items')
+          .update({ quantity: 0 })
+          .eq('session_id', currentSession.id).eq('barcode', bc);
+      }
     }
-    setSyncDot(rcErr ? 'off' : 'on');
-    if(rcErr){ toast('❌ อัปเดตไม่ได้: '+rcErr.message); return; }
+
+    // Accumulate ด้วย RPC เหมือน normal mode (บวกสะสมจาก reset 0)
+    var { data: rpcRows2, error: rpcErr2 } = await supabase.rpc('increment_count_qty', {
+      p_session_id: currentSession.id,
+      p_barcode:    bc,
+      p_delta:      qty,
+      p_sold_delta: soldQty,
+      p_counter:    counterName ? counterName+' [ซ่อม]' : null
+    });
+    setSyncDot(rpcErr2 ? 'off' : 'on');
+    if(rpcErr2){ toast('❌ บันทึกไม่ได้: '+rpcErr2.message); return; }
+    var rcRow = rpcRows2 && rpcRows2[0];
+    if(!rcRow){ toast('❌ ไม่ได้รับข้อมูลกลับจาก DB'); return; }
     var rcIdx = counts.findIndex(function(c){ return c.barcode === bc; });
-    if(rcIdx > -1) counts[rcIdx] = rcData; else counts.unshift(rcData);
+    if(rcIdx > -1) counts[rcIdx] = rcRow; else counts.unshift(rcRow);
+    _selfWriting[bc] = rcRow.quantity;
+    clearTimeout(_selfWriting['_t_'+bc]);
+    _selfWriting['_t_'+bc] = setTimeout(function(){ delete _selfWriting[bc]; delete _selfWriting['_t_'+bc]; }, 5000);
     renderCounts(); updateSelCounted(bc);
-    // นับซ่อม = REPLACE ทั้งหมด → ลบ logs เดิมของ barcode นี้แล้ว insert log ใหม่ค่าเดียว
-    // เพื่อให้ recomputeCountItem sum logs = qty เสมอ
-    await supabase.from('count_logs').delete()
-      .eq('session_id', currentSession.id).eq('barcode', bc);
     insertCountLog(bc, qty, counterName, location);
     reportAutoRefresh();
-    toast('🔄 ซ่อม: '+qty+' ชิ้น → รวม '+rcData.quantity+' × '+(p?p.name:bc));
-    return rcData;
+    var rcSuffix = isFirstRc ? '' : ' (ใส่เพิ่ม)';
+    toast('🔄 ซ่อม'+rcSuffix+': +'+qty+' ชิ้น → รวม '+rcRow.quantity+' × '+(p?p.name:bc));
+    return rcRow;
   }
 
   // Normal mode → atomic upsert ผ่าน RPC แล้ว patch location แยก (RPC ไม่รับ location param)
@@ -1208,6 +1244,10 @@ async function addCount(bc, qty, soldQty, counterName, location){
   }
   var exIdx = counts.findIndex(function(c){ return c.barcode === bc; });
   if(exIdx > -1) counts[exIdx] = newRow; else counts.unshift(newRow);
+  // Guard: ป้องกัน Realtime event เก่า (out-of-order) เขียนทับค่าที่ RPC เพิ่งให้มา
+  _selfWriting[bc] = newRow.quantity;
+  clearTimeout(_selfWriting['_t_'+bc]);
+  _selfWriting['_t_'+bc] = setTimeout(function(){ delete _selfWriting[bc]; delete _selfWriting['_t_'+bc]; }, 5000);
   renderCounts(); updateSelCounted(bc);
   insertCountLog(bc, qty, counterName, location);
   reportAutoRefresh();
@@ -1268,7 +1308,7 @@ function renderCounts(){
     virtualHtml = missingBcs.map(function(bc){
       var p   = prods[bc] || {};
       var bal = getBal(bc);
-      return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto;border-left:3px solid #e74c3c;background:#fff5f5;">'+
+      return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto;border-left:3px solid #e74c3c;background:#fff5f5;cursor:pointer" onclick="selectByBarcodeValue(\''+esc(bc)+'\');document.getElementById(\'scan-card\').scrollIntoView({behavior:\'smooth\',block:\'start\'})">'+
         '<div><div class="cnt-name">'+esc(p.name||bc)+
         '<span class="recount-item-badge" style="background:#e74c3c">⚠️ ยังไม่ได้นับ</span></div>'+
         '<div class="cnt-bc">'+esc(bc)+'</div></div>'+
@@ -1276,7 +1316,8 @@ function renderCounts(){
         '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">นับจริง<br><b style="font-size:14px;color:#aaa">0</b></div>'+
         '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">ขาย<br><b style="font-size:14px;color:#aaa">—</b></div>'+
         '<div style="min-width:36px;text-align:center;font-weight:700;font-size:14px;color:#e74c3c">'+(-bal)+'</div>'+
-        '<div></div><div></div>'+
+        '<button onclick="event.stopPropagation();selectByBarcodeValue(\''+esc(bc)+'\');document.getElementById(\'scan-card\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" '+
+          'style="background:#6c3483;color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;white-space:nowrap">📝 นับ</button>'+
         '</div>';
     }).join('');
   }
@@ -1294,15 +1335,18 @@ function renderCounts(){
     var itemBg   = needRc && diff !== 0 ? 'border-left:3px solid #e67e22;background:#fff3e0;' : '';
     var tStr = fmtTime(c.scanned_at);
     var locBadge = c.location ? '<span style="background:#e8f5e9;color:#2e7d32;border-radius:8px;padding:1px 7px;font-size:10px;margin-left:4px">📍 '+esc(c.location)+'</span>' : '';
-    var logLink = '<span onclick="showCountLog(\''+esc(c.barcode)+'\',\''+c.id+'\')" style="color:#b39ddb;font-size:10px;font-family:monospace;cursor:pointer;margin-left:6px" title="ดูประวัติ / แก้ไข / ลบ">'+(tStr ? '🕐 '+tStr+' ▸' : '📋 ▸')+'</span>';
-    return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto;'+itemBg+'">'+
-      '<div><div class="cnt-name">'+esc(c.product_name||'ไม่ทราบชื่อ')+rcBadge+soldBadge+ctrBadge+locBadge+'</div>'+
-      '<div class="cnt-bc">'+esc(c.barcode||'')+logLink+'</div></div>'+
-      '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">คงเหลือ<br><b style="font-size:14px;color:#555">'+bal+'</b></div>'+
-      '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">นับจริง<br><b style="font-size:14px;color:#6c3483">'+c.quantity+'</b></div>'+
-      '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">ขาย<br><b style="font-size:14px;color:#e67e22">'+(sold||'—')+'</b></div>'+
-      '<div style="min-width:40px;text-align:center;font-weight:700;font-size:14px;'+dc+'">'+(diff>=0?'+':'')+diff+'</div>'+
-      '</div>';
+    var logToggle = '<span id="log-toggle-'+c.id+'" onclick="toggleCountLog(\''+esc(c.barcode)+'\',\''+c.id+'\')" style="color:#b39ddb;font-size:10px;font-family:monospace;cursor:pointer;margin-left:6px" title="ดูประวัติการสแกน">'+(tStr ? '🕐 '+tStr+' ▸' : '📋 ▸')+'</span>';
+    return '<div style="margin-bottom:6px">'+
+      '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto;margin-bottom:0;'+itemBg+'">'+
+        '<div><div class="cnt-name">'+esc(c.product_name||'ไม่ทราบชื่อ')+rcBadge+soldBadge+ctrBadge+locBadge+'</div>'+
+        '<div class="cnt-bc">'+esc(c.barcode||'')+logToggle+'</div></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">คงเหลือ<br><b style="font-size:14px;color:#555">'+bal+'</b></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">นับจริง<br><b style="font-size:14px;color:#6c3483">'+c.quantity+'</b></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">ขาย<br><b style="font-size:14px;color:#e67e22">'+(sold||'—')+'</b></div>'+
+        '<div style="min-width:40px;text-align:center;font-weight:700;font-size:14px;'+dc+'">'+(diff>=0?'+':'')+diff+'</div>'+
+      '</div>'+
+      '<div id="log-inline-'+c.id+'" style="display:none;background:#faf8ff;border:1px solid #e8e0f0;border-top:none;border-radius:0 0 10px 10px;padding:10px 12px;font-size:12px"></div>'+
+    '</div>';
   }).join('');
   // Keep sales page in sync
   salesAutoRefresh();
@@ -1438,8 +1482,11 @@ function reportAutoRefresh(){
 // ═══════════════════════════════════════
 //  นับซ่อม (Recount Mode)
 // ═══════════════════════════════════════
-var _recountMode   = false;   // true = กำลังนับซ่อม
-var _recountBarcodes = {};    // barcode → true ถ้าต้องซ่อม
+var _recountMode        = false;  // true = กำลังนับซ่อม
+var _recountBarcodes    = {};     // barcode → true ถ้าต้องซ่อม
+var _recountInitialized = {};     // barcode → true หลัง reset แล้ว (ครั้งแรกใน recount)
+var _prevSession = null;          // session ก่อน recount (restore เมื่อ exit)
+var _prevCounts  = [];            // counts[] ก่อน recount
 
 // Bug 3: Realtime subscription สำหรับ count_items ของ session ปัจจุบัน
 var _rtChannel = null;
@@ -1553,6 +1600,10 @@ async function startRecount(sessionId, branch, date){
     .update({ status: 'in_progress' }).eq('id', sessionId);
   if(reErr){ toast('❌ เปิด session ไม่ได้: '+reErr.message); return; }
 
+  // บันทึก session ปัจจุบันก่อนเขียนทับ (เพื่อ restore เมื่อ exit recount)
+  _prevSession = currentSession ? Object.assign({}, currentSession) : null;
+  _prevCounts  = counts.slice();
+
   // Set as current session (reload its count items)
   sessData.status = 'in_progress';
   currentSession = sessData;
@@ -1587,12 +1638,35 @@ async function exitRecountMode(){
   _recountMode     = false;
   _recountBarcodes = {};
   document.getElementById('recount-banner').style.display = 'none';
-  // Bug 6: ปลด recount_by lock ใน DB
+
   if(currentSession){
-    await supabase.from('count_sessions').update({ recount_by: null }).eq('id', currentSession.id);
+    // Re-complete session recount + ปลด recount_by lock
+    await supabase.from('count_sessions')
+      .update({ status: 'completed', recount_by: null, completed_at: new Date().toISOString() })
+      .eq('id', currentSession.id);
   }
+
+  // Restore session ที่นับอยู่ก่อนหน้า (ถ้ามี) หรือ clear ถ้าไม่มี
+  unsubscribeCountItems();
+  if(_prevSession && _prevSession.status === 'in_progress'){
+    currentSession = _prevSession;
+    counts = _prevCounts;
+    localStorage.setItem('nch_session_id', currentSession.id);
+    subscribeCountItems(currentSession.id);
+    toast('✅ ออกจากโหมดนับซ่อม — กลับสู่รอบนับเดิม');
+  } else {
+    currentSession = null;
+    counts = [];
+    localStorage.removeItem('nch_session_id');
+    toast('✅ ออกจากโหมดนับซ่อมแล้ว — กลับสู่โหมดนับปกติ');
+  }
+  _prevSession        = null;
+  _prevCounts         = [];
+  _recountInitialized = {};
+
+  updateSessionUI();
   renderCounts();
-  toast('✅ ออกจากโหมดนับซ่อมแล้ว');
+  go('count');
 }
 
 // ═══════════════════════════════════════
@@ -1926,6 +2000,12 @@ async function loadReport(){
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ '+error.message); return; }
 
+  // Overlay local counts[] (in-flight writes ที่ยังไม่ sync ลง DB)
+  // เพื่อให้ Report tab แสดงข้อมูลตรงกับ Tab นับสต็อก
+  window._rptData = data;
+  syncCurrentSessionToRptData();
+  data = window._rptData;
+
   // โหลด balance ต่อ session (รองรับทั้งกรณีกรองสาขาเดียวและทุกสาขา)
   var sessionBalMap = {}; // sessionId → { barcode → balance }
   var bdProcessed = {};
@@ -2046,10 +2126,12 @@ async function loadReport(){
 
     // ─── diff ≠ 0 items (for recount) ───
     var diffItems = countedItems.filter(function(i){ return (i.quantity+(i.sold_qty||0))-i.balance !== 0; });
-    var recountBtn = isDone && diffItems.length > 0
+    // แสดงปุ่มนับซ่อมสำหรับทุก session ที่ completed (startRecount จะแจ้งเองถ้าไม่มีรายการต้องซ่อม)
+    var recountLabel = diffItems.length > 0 ? '🔄 นับซ่อม ('+diffItems.length+')' : '🔄 นับซ่อม';
+    var recountBtn = isDone
       ? '<button onclick="event.stopPropagation();startRecount(\''+s.id+'\',\''+esc(s.branch)+'\',\''+s.count_date+'\')" '+
         'style="margin-left:6px;background:#e67e22;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:\'Sarabun\',sans-serif">'+
-        '🔄 นับซ่อม ('+diffItems.length+')</button>'
+        recountLabel+'</button>'
       : '';
 
     var tableRows = aggItems.map(function(i, idx){
@@ -3790,104 +3872,92 @@ function openPrintWindow(bodyHtml){
 // ─── COUNT LOG (ประวัติการนับแต่ละครั้ง) ───────────────────────────
 var _logCurrentItemId = null; // id ของ count_items row ที่เปิด modal อยู่
 
-async function showCountLog(bc, countItemId){
+// toggleCountLog — แสดง/ซ่อน history inline ใต้รายการ (ไม่มี popup)
+async function toggleCountLog(bc, countItemId){
   _logCurrentItemId = countItemId || null;
-  var modal = document.getElementById('count-log-modal');
-  modal.style.display = 'block';
-  var p = prods[bc] || {};
-  document.getElementById('log-modal-title').textContent = p.name || bc;
-  document.getElementById('log-modal-bc').textContent = bc;
-  document.getElementById('log-modal-summary').style.display = 'none';
-  document.getElementById('count-log-list').innerHTML =
-    '<div style="text-align:center;padding:24px;color:#aaa">กำลังโหลด...</div>';
+  var el = document.getElementById('log-inline-'+countItemId);
+  var toggle = document.getElementById('log-toggle-'+countItemId);
+  if(!el) return;
 
-  // ปุ่ม ✖ ลบรายการทั้งหมด — แสดงที่ header เฉพาะเมื่อ session active
-  var actArea = document.getElementById('log-action-area');
-  var canEdit = currentSession && currentSession.status === 'in_progress' && countItemId;
-  actArea.style.display = canEdit ? 'flex' : 'none';
-  actArea.innerHTML = canEdit
-    ? '<button onclick="if(confirm(\'ลบรายการนี้ทั้งหมด?\')){ closeCountLog(); removeCountItem(\''+countItemId+'\'); }" '+
-        'style="padding:7px 14px;background:#fde8e8;color:#c0392b;border:1px solid #e74c3c;border-radius:8px;font-size:13px;cursor:pointer;font-family:\'Sarabun\',sans-serif">✖ ลบรายการทั้งหมด</button>'
-    : '';
-
-  if(!currentSession){ document.getElementById('count-log-list').innerHTML='<div style="color:#e74c3c;text-align:center;padding:20px">ไม่มี session</div>'; return; }
-  var { data, error } = await supabase.from('count_logs')
-    .select('*').eq('session_id', currentSession.id).eq('barcode', bc)
-    .order('scanned_at', { ascending: false });
-  if(error){ document.getElementById('count-log-list').innerHTML='<div style="color:#e74c3c;padding:12px">❌ '+error.message+'</div>'; return; }
-  if(!data||!data.length){
-    document.getElementById('count-log-list').innerHTML=
-      '<div style="text-align:center;padding:24px;color:#aaa">ยังไม่มีประวัติการสแกน</div>';
+  // ถ้าเปิดอยู่แล้ว → ปิด
+  if(el.style.display !== 'none'){
+    el.style.display = 'none';
+    if(toggle) toggle.textContent = toggle.textContent.replace('▾','▸');
     return;
   }
-  var totalQty = data.reduce(function(s,l){ return s+(l.delta_qty||0); }, 0);
-  document.getElementById('log-total').textContent = totalQty;
-  document.getElementById('log-count').textContent = data.length;
-  document.getElementById('log-modal-summary').style.display = '';
+
+  el.style.display = 'block';
+  if(toggle) toggle.textContent = toggle.textContent.replace('▸','▾');
+  el.innerHTML = '<div style="color:#aaa;text-align:center;padding:10px">กำลังโหลด...</div>';
+
+  if(!currentSession){ el.innerHTML='<div style="color:#e74c3c">ไม่มี session</div>'; return; }
+  var { data, error } = await supabase.from('count_logs')
+    .select('*').eq('session_id', currentSession.id).eq('barcode', bc)
+    .order('scanned_at', { ascending: true });
+  if(error){ el.innerHTML='<div style="color:#e74c3c">❌ '+error.message+'</div>'; return; }
+  if(!data||!data.length){
+    el.innerHTML='<div style="color:#aaa;text-align:center;padding:8px">ยังไม่มีประวัติการสแกน</div>';
+    return;
+  }
+
   var isActive = currentSession && currentSession.status === 'in_progress';
-  document.getElementById('count-log-list').innerHTML = data.map(function(log, i){
-    var num = data.length - i;
-    var logBc = esc(bc);
-    var editBtns = isActive
-      ? '<div style="display:flex;gap:6px;margin-top:8px">'+
-          '<button id="log-edit-btn-'+log.id+'" onclick="startEditCountLog(\''+log.id+'\',\''+logBc+'\','+log.delta_qty+')" '+
-            'style="flex:1;padding:6px;background:#fff3cd;color:#856404;border:1px solid #ffc107;border-radius:7px;font-size:12px;cursor:pointer;font-family:\'Sarabun\',sans-serif">✏️ แก้จำนวน</button>'+
-          '<button onclick="deleteCountLog(\''+log.id+'\',\''+logBc+'\')" '+
-            'style="padding:6px 10px;background:#fde8e8;color:#c0392b;border:1px solid #e74c3c;border-radius:7px;font-size:12px;cursor:pointer;font-family:\'Sarabun\',sans-serif">🗑️</button>'+
-        '</div>'
+  var total = data.reduce(function(s,l){ return s+(l.delta_qty||0); }, 0);
+
+  // ── Auto-fix: ถ้า count_items.quantity ไม่ตรงกับผลรวม logs จริง → recompute ทันที ──
+  var idx = counts.findIndex(function(c){ return c.barcode === bc; });
+  var currentQty = idx > -1 ? (parseInt(counts[idx].quantity)||0) : -1;
+  if(currentQty !== -1 && currentQty !== total){
+    el.innerHTML = '<div style="color:#e67e22;text-align:center;padding:8px;font-size:12px">⚠️ ยอดไม่ตรง ('+currentQty+' vs logs '+total+') กำลังแก้ไข...</div>';
+    await recomputeCountItem(bc);
+  }
+
+  var logBc = esc(bc);
+  var rows = data.map(function(log, i){
+    var delBtn = isActive
+      ? '<button onclick="deleteCountLog(\''+log.id+'\',\''+logBc+'\','+log.delta_qty+',\''+countItemId+'\')" '+
+          'style="width:20px;height:20px;border-radius:50%;background:#e74c3c;color:#fff;border:none;'+
+          'font-size:11px;font-weight:700;cursor:pointer;line-height:20px;flex-shrink:0">✕</button>'
       : '';
-    return '<div id="log-entry-'+log.id+'" style="border:1px solid #eee;border-radius:10px;padding:10px 14px;margin-bottom:8px">'+
-      '<div style="display:flex;justify-content:space-between;align-items:center">'+
-        '<span id="log-qty-'+log.id+'" style="font-size:13px;font-weight:700;color:#6c3483">ครั้งที่ '+num+' · +'+log.delta_qty+' ชิ้น</span>'+
-        '<span style="font-size:11px;color:#aaa;font-family:monospace">'+fmtDateTime(log.scanned_at)+'</span>'+
-      '</div>'+
-      (log.counter_name ? '<div style="font-size:12px;color:#666;margin-top:4px">👤 '+esc(log.counter_name)+'</div>' : '')+
-      (log.location     ? '<div style="font-size:12px;color:#27ae60;margin-top:2px">📍 '+esc(log.location)+'</div>' : '')+
-      editBtns+
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #ede8f8">'+
+      '<span style="color:#6c3483;font-weight:700;min-width:22px;font-size:12px">'+(i+1)+'.</span>'+
+      '<span style="font-weight:700;color:#1a5276;font-size:13px">+'+log.delta_qty+' ชิ้น</span>'+
+      '<span style="color:#aaa;font-size:11px;font-family:monospace;flex:1">'+fmtDateTime(log.scanned_at)+'</span>'+
+      (log.counter_name?'<span style="color:#666;font-size:11px">👤 '+esc(log.counter_name)+'</span>':'')+
+      (log.location?'<span style="color:#27ae60;font-size:11px">📍 '+esc(log.location)+'</span>':'')+
+      delBtn+
     '</div>';
   }).join('');
+
+  el.innerHTML = rows +
+    '<div style="padding-top:7px;font-size:12px;color:#6c3483;font-weight:700;text-align:right">รวม '+total+' ชิ้น จาก '+data.length+' ครั้ง</div>';
 }
 
-function closeCountLog(){
-  document.getElementById('count-log-modal').style.display = 'none';
-}
+async function deleteCountLog(logId, bc, delta, countItemId){
+  if(!confirm('ลบการสแกนครั้งนี้ออก?')) return;
 
-function startEditCountLog(logId, bc, currentQty){
-  var qtyEl = document.getElementById('log-qty-'+logId);
-  var btnEl = document.getElementById('log-edit-btn-'+logId);
-  if(!qtyEl) return;
-  qtyEl.innerHTML =
-    '<input type="number" id="log-edit-input-'+logId+'" value="'+currentQty+'" min="0" '+
-    'style="width:70px;padding:4px 8px;border:2px solid #6c3483;border-radius:6px;font-size:14px;font-weight:700;text-align:center;outline:none"> ชิ้น';
-  if(btnEl){
-    btnEl.textContent = '✅ ยืนยัน';
-    btnEl.style.background = '#d4edda';
-    btnEl.style.color = '#155724';
-    btnEl.style.borderColor = '#c3e6cb';
-    btnEl.onclick = function(e){ e.stopPropagation(); saveCountLog(logId, bc); };
+  // Optimistic update ทันที
+  var idx = counts.findIndex(function(c){ return c.barcode === bc; });
+  if(idx > -1 && delta){
+    var newTotal = Math.max(0, (parseInt(counts[idx].quantity)||0) - (parseInt(delta)||0));
+    counts[idx] = Object.assign({}, counts[idx], { quantity: newTotal });
+    renderCounts();
+    reportAutoRefresh();
   }
-  setTimeout(function(){ var inp = document.getElementById('log-edit-input-'+logId); if(inp){ inp.focus(); inp.select(); } }, 50);
-}
 
-async function saveCountLog(logId, bc){
-  var inp = document.getElementById('log-edit-input-'+logId);
-  if(!inp) return;
-  var newQty = parseInt(inp.value);
-  if(isNaN(newQty)||newQty<0){ toast('⚠️ จำนวนไม่ถูกต้อง'); return; }
-  var { error } = await supabase.from('count_logs').update({ delta_qty: newQty }).eq('id', logId);
-  if(error){ toast('❌ '+error.message); return; }
-  await recomputeCountItem(bc);
-  showCountLog(bc, _logCurrentItemId);
-  toast('✅ แก้จำนวนแล้ว');
-}
-
-async function deleteCountLog(logId, bc){
-  if(!confirm('ลบประวัติการสแกนครั้งนี้?')) return;
   var { error } = await supabase.from('count_logs').delete().eq('id', logId);
   if(error){ toast('❌ '+error.message); return; }
+
   await recomputeCountItem(bc);
-  showCountLog(bc, _logCurrentItemId);
-  toast('🗑️ ลบประวัติแล้ว');
+  // โหลด inline history ใหม่ (แทน popup)
+  var cid = countItemId || _logCurrentItemId;
+  if(cid){
+    var el = document.getElementById('log-inline-'+cid);
+    if(el && el.style.display !== 'none'){
+      el.style.display = 'none'; // ซ่อนก่อน แล้วเปิดใหม่เพื่อ reload
+      await toggleCountLog(bc, cid);
+    }
+  }
+  toast('🗑️ ลบการสแกนแล้ว');
 }
 
 async function recomputeCountItem(bc){
