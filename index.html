@@ -175,7 +175,9 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 .sync-dot{width:8px;height:8px;border-radius:50%;background:#27ae60;display:inline-block;margin-right:4px}
 .sync-dot.off{background:#e74c3c}
 .sync-dot.syncing{background:#f39c12;animation:pulse 1s ease-in-out infinite}
+.sync-dot.queued{background:#f39c12}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+#sync-queue-label{font-size:11px;color:#e67e22;font-weight:600;margin-right:4px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -216,7 +218,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
   <div class="header">
     <h1>🍬 NCH Stock</h1>
     <div class="header-right">
-      <span class="sync-dot" id="sync-dot"></span>
+      <span id="sync-queue-label" style="display:none"></span><span class="sync-dot" id="sync-dot"></span>
       <span class="huser" id="huser-email"></span>
       <button class="hbtn" id="refresh-btn" onclick="doRefreshAll()" title="รีเฟรชข้อมูลทั้งหมด">🔄</button>
       <button class="hbtn" onclick="doLogout()">ออก</button>
@@ -658,6 +660,32 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <div id="import-sales-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
       </div>
 
+      <!-- ── อัปเดตสินค้า FOC ── -->
+      <div class="card">
+        <h3>🎁 อัปเดตสินค้า FOC (แจกฟรี)</h3>
+        <p style="font-size:13px;color:#888;margin-bottom:10px">
+          นำเข้าจำนวน FOC จากไฟล์ Excel เข้าสู่ Session ที่ตรงกับสาขา+วันที่<br>
+          คอลัมน์: <strong>รหัสสินค้า / Barcode</strong> และ <strong>จำนวน FOC</strong>
+        </p>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <select id="foc-import-branch" style="flex:2;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;background:#fff" onchange="refreshFocHistory()">
+            <option value="">— เลือกสาขา —</option>
+          </select>
+          <input type="date" id="foc-import-date" style="flex:1;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px" onchange="refreshFocHistory()">
+        </div>
+        <p style="font-size:12px;color:#e67e22;margin-bottom:8px">⚠️ วันที่ต้องตรงกับวันที่ใน Session การนับ</p>
+        <div class="btn-row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
+          <label class="btn btn-success" style="cursor:pointer">
+            📥 Excel FOC (.xlsx)
+            <input type="file" accept=".xlsx,.xls" id="import-foc-xlsx" onchange="importFocXLSX(this)" style="display:none">
+          </label>
+          <button id="foc-force-upload-btn" class="btn" style="display:none;background:#e67e22;color:#fff" onclick="forceImportFoc()">⚠️ อัพโหลดซ้ำ (ยืนยัน)</button>
+          <button class="btn" style="background:#e74c3c;color:#fff" onclick="clearFocBalance()">🗑️ ล้าง FOC ทั้งหมด</button>
+        </div>
+        <div id="import-foc-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
+        <div id="foc-upload-history" style="margin-top:8px;font-size:12px;color:#888"></div>
+      </div>
+
       <div class="card">
         <h3>ℹ️ เกี่ยวกับ</h3>
         <p style="font-size:13px;color:#888">NCH Stock Count v7 (Online)<br>นัทแคนดี้เฮาท์ จำกัด — ระบบนับสต็อกออนไลน์<br>รองรับหลายผู้ใช้พร้อมกัน | รายงานแบบ NCH Inventory Check List</p>
@@ -736,6 +764,80 @@ async function saveBranchBalance(branch, items, date){
       .upsert(rows.slice(i,i+batchSize), { onConflict: 'barcode,branch,balance_date' });
   }
 }
+
+// ═══════════════════════════════════════
+//  Sales Balance (product_sales table)
+//  คล้าย branchBal แต่เก็บยอดขายต่อสาขา+วันที่
+// ═══════════════════════════════════════
+var salesBal = {};   // barcode → sold_qty (โหลดจาก product_sales)
+
+function getSales(bc){
+  return salesBal[bc] !== undefined ? salesBal[bc] : 0;
+}
+
+async function loadSalesBalance(branch, date){
+  salesBal = {};
+  if(!branch || !date) return;
+  var { data, error } = await supabase.from('product_sales')
+    .select('barcode,sold_qty').eq('branch', branch).eq('sale_date', date);
+  if(!error && data) data.forEach(function(r){ salesBal[r.barcode] = parseFloat(r.sold_qty)||0; });
+}
+
+async function saveSalesBalance(branch, soldMap, date){
+  // soldMap: { barcode → sold_qty }
+  if(!branch || !date || !soldMap) return;
+  var now = new Date().toISOString();
+  var userId = currentUser ? currentUser.email : null;
+  var keys = Object.keys(soldMap);
+  if(!keys.length) return;
+  var rows = keys.map(function(bc){
+    return { barcode: bc, branch: branch, sale_date: date, sold_qty: soldMap[bc], updated_at: now, updated_by: userId };
+  });
+  var batchSize = 50;
+  for(var i = 0; i < rows.length; i += batchSize){
+    var { error } = await supabase.from('product_sales')
+      .upsert(rows.slice(i, i + batchSize), { onConflict: 'barcode,branch,sale_date' });
+    if(error) return error;
+  }
+  return null;
+}
+// ═══════════════════════════════════════
+//  FOC Balance (product_foc table)
+//  คล้าย salesBal แต่เก็บสินค้า FOC (แจกฟรี) ต่อสาขา+วันที่
+// ═══════════════════════════════════════
+var focBal = {};   // barcode → foc_qty (โหลดจาก product_foc)
+
+function getFoc(bc){
+  return focBal[bc] !== undefined ? focBal[bc] : 0;
+}
+
+async function loadFocBalance(branch, date){
+  focBal = {};
+  if(!branch || !date) return;
+  var { data, error } = await supabase.from('product_foc')
+    .select('barcode,foc_qty').eq('branch', branch).eq('foc_date', date);
+  if(!error && data) data.forEach(function(r){ focBal[r.barcode] = parseFloat(r.foc_qty)||0; });
+}
+
+async function saveFocBalance(branch, focMap, date){
+  // focMap: { barcode → foc_qty }
+  if(!branch || !date || !focMap) return;
+  var now = new Date().toISOString();
+  var userId = currentUser ? currentUser.email : null;
+  var keys = Object.keys(focMap);
+  if(!keys.length) return;
+  var rows = keys.map(function(bc){
+    return { barcode: bc, branch: branch, foc_date: date, foc_qty: focMap[bc], updated_at: now, updated_by: userId };
+  });
+  var batchSize = 50;
+  for(var i = 0; i < rows.length; i += batchSize){
+    var { error } = await supabase.from('product_foc')
+      .upsert(rows.slice(i, i + batchSize), { onConflict: 'barcode,branch,foc_date' });
+    if(error) return error;
+  }
+  return null;
+}
+
 var activeCat = 'ทั้งหมด';
 var activePage = 'count';
 
@@ -780,6 +882,7 @@ async function showApp(){
   if(cni) cni.value = getUserDisplayName();
   populateBranches();
   await loadProducts();
+  startOfflineRetry();
   setSyncDot('on');
   // set today date
   var today = new Date().toISOString().slice(0,10);
@@ -789,6 +892,8 @@ async function showApp(){
   if(bbd) bbd.value = today;
   var sid = document.getElementById('sales-import-date');
   if(sid) sid.value = today;
+  var fid = document.getElementById('foc-import-date');
+  if(fid) fid.value = today;
   renderProds();
   // ─── Restore session after page refresh ───
   var savedSessId = localStorage.getItem('nch_session_id');
@@ -796,17 +901,27 @@ async function showApp(){
     var { data: sessArr0, error: sessErr } = await supabase.from('count_sessions')
       .select('*').eq('id', savedSessId).limit(1);
     var sessRow = sessArr0 && sessArr0[0];
-    if(!sessErr && sessRow && sessRow.status === 'in_progress'){
-      var { data: itemRows } = await supabase.from('count_items')
-        .select('*').eq('session_id', savedSessId).order('scanned_at', { ascending: false });
+    if(!sessErr && sessRow && (sessRow.status === 'in_progress' || sessRow.status === 'completed')){
+      var { data: itemRows, error: itemRestoreErr } = await supabase.from('count_items')
+        .select('*').eq('session_id', savedSessId).order('created_at', { ascending: false });
       currentSession = sessRow;
       counts = itemRows || [];
-      // Bug 3: เริ่ม realtime sync หลัง restore
-      subscribeCountItems(savedSessId);
+      if(sessRow.status === 'in_progress'){
+        // ยังนับอยู่ → subscribe realtime ต่อ
+        subscribeCountItems(savedSessId);
+        toast('🔄 กลับมานับต่อ: '+sessRow.branch+' | '+sessRow.count_date);
+      } else {
+        // Completed → load เพื่อดูข้อมูล (read-only) ไม่ต้อง subscribe
+        toast('📋 โหลดข้อมูลรอบ: '+sessRow.branch+' | '+sessRow.count_date+' (เสร็จแล้ว)');
+      }
       updateSessionUI();
       renderCounts();
-      await loadBranchBalance(sessRow.branch, sessRow.count_date);
-      toast('🔄 กลับมานับต่อ: '+sessRow.branch+' | '+sessRow.count_date);
+      await Promise.all([
+        loadBranchBalance(sessRow.branch, sessRow.count_date),
+        loadSalesBalance(sessRow.branch, sessRow.count_date),
+        loadFocBalance(sessRow.branch, sessRow.count_date)
+      ]);
+      renderCounts();
     } else {
       localStorage.removeItem('nch_session_id');
     }
@@ -815,7 +930,139 @@ async function showApp(){
 
 function setSyncDot(state){ // 'on'|'off'|'syncing'
   var d = document.getElementById('sync-dot');
+  if(_offlineQueueCount > 0 && (state === 'on')) {
+    // ยังมี queue ค้าง — คง state queued ไว้
+    d.className = 'sync-dot queued';
+    return;
+  }
   d.className = 'sync-dot' + (state==='off'?' off':state==='syncing'?' syncing':'');
+}
+
+// ═══════════════════════════════════════
+//  Offline Queue (IndexedDB)
+// ═══════════════════════════════════════
+var _offlineDB = null;
+var _offlineQueueCount = 0;
+var _offlineFlushTimer = null;
+
+function initOfflineDB(){
+  if(_offlineDB) return Promise.resolve(_offlineDB);
+  return new Promise(function(resolve, reject){
+    var req = indexedDB.open('nch_offline_v1', 1);
+    req.onupgradeneeded = function(e){
+      e.target.result.createObjectStore('queue', { keyPath: 'id', autoIncrement: true });
+    };
+    req.onsuccess = function(e){ _offlineDB = e.target.result; resolve(_offlineDB); };
+    req.onerror = function(){ reject(req.error); };
+  });
+}
+
+async function pushOfflineQueue(op){
+  try {
+    var db = await initOfflineDB();
+    await new Promise(function(resolve, reject){
+      var tx = db.transaction('queue', 'readwrite');
+      tx.objectStore('queue').add(op);
+      tx.oncomplete = resolve; tx.onerror = reject;
+    });
+    _offlineQueueCount++;
+    _updateQueueDot();
+  } catch(e){ console.error('IDB push error', e); }
+}
+
+async function _getOfflineQueue(){
+  try {
+    var db = await initOfflineDB();
+    return await new Promise(function(resolve, reject){
+      var tx = db.transaction('queue', 'readonly');
+      var req = tx.objectStore('queue').getAll();
+      req.onsuccess = function(){ resolve(req.result || []); };
+      req.onerror = reject;
+    });
+  } catch(e){ return []; }
+}
+
+async function _removeOfflineItem(id){
+  try {
+    var db = await initOfflineDB();
+    await new Promise(function(resolve, reject){
+      var tx = db.transaction('queue', 'readwrite');
+      tx.objectStore('queue').delete(id);
+      tx.oncomplete = resolve; tx.onerror = reject;
+    });
+    _offlineQueueCount = Math.max(0, _offlineQueueCount - 1);
+    _updateQueueDot();
+  } catch(e){}
+}
+
+function _updateQueueDot(){
+  var lbl = document.getElementById('sync-queue-label');
+  var d = document.getElementById('sync-dot');
+  if(_offlineQueueCount > 0){
+    d.className = 'sync-dot queued';
+    if(lbl){ lbl.style.display = ''; lbl.textContent = '⏳ '+_offlineQueueCount; }
+  } else {
+    d.className = 'sync-dot';
+    if(lbl){ lbl.style.display = 'none'; lbl.textContent = ''; }
+  }
+}
+
+function isNetworkError(err){
+  if(!navigator.onLine) return true;
+  var msg = (err && err.message ? err.message : '').toLowerCase();
+  return msg.includes('network') || msg.includes('fetch') || msg.includes('failed to fetch')
+      || msg.includes('connection') || msg.includes('timeout') || msg.includes('networkerror');
+}
+
+async function flushOfflineQueue(){
+  if(!navigator.onLine) return;
+  var items = await _getOfflineQueue();
+  if(!items.length) return;
+  var flushed = 0;
+  for(var i = 0; i < items.length; i++){
+    var op = items[i];
+    try {
+      if(op.type === 'addCount'){
+        var { data: rr, error: re } = await supabase.rpc('increment_count_qty', {
+          p_session_id: op.sessionId,
+          p_barcode:    op.bc,
+          p_delta:      op.qty,
+          p_sold_delta: op.soldQty || 0,
+          p_counter:    op.counterName || null
+        });
+        if(!re){
+          await _removeOfflineItem(op.id);
+          flushed++;
+          // sync local counts[] ถ้า session ยังอยู่
+          if(currentSession && currentSession.id === op.sessionId && rr && rr[0]){
+            var idx = counts.findIndex(function(c){ return c.barcode === op.bc; });
+            if(idx > -1) counts[idx] = rr[0]; else counts.unshift(rr[0]);
+          }
+          // flush count_log ที่ค้างด้วย
+          await supabase.from('count_logs').insert({
+            session_id: op.sessionId, barcode: op.bc, delta_qty: op.qty,
+            counter_name: op.counterName || null, location: op.location || null
+          });
+        }
+      }
+    } catch(e){}
+  }
+  if(flushed > 0){
+    renderCounts();
+    toast('📡 ส่งข้อมูลค้าง '+flushed+' รายการสำเร็จ');
+  }
+}
+
+async function startOfflineRetry(){
+  // โหลด queue count จาก IDB เพื่อ restore dot หลัง page refresh
+  var existing = await _getOfflineQueue();
+  _offlineQueueCount = existing.length;
+  _updateQueueDot();
+
+  clearInterval(_offlineFlushTimer);
+  _offlineFlushTimer = setInterval(flushOfflineQueue, 10000);
+  window.addEventListener('online', function(){ toast('📶 เชื่อมต่อแล้ว — ส่งข้อมูลค้าง...'); flushOfflineQueue(); });
+  window.addEventListener('offline', function(){ toast('📴 ออฟไลน์ — ข้อมูลจะถูกบันทึกไว้และส่งเมื่อเชื่อมต่อใหม่'); });
 }
 
 // ═══════════════════════════════════════
@@ -913,7 +1160,7 @@ function go(page){
 //  Branches
 // ═══════════════════════════════════════
 function populateBranches(){
-  ['sess-branch','rpt-branch','branch-bal-import-sel','sales-import-branch'].forEach(function(id){
+  ['sess-branch','rpt-branch','branch-bal-import-sel','sales-import-branch','foc-import-branch'].forEach(function(id){
     var sel = document.getElementById(id);
     if(!sel) return;
     var cur = sel.value;
@@ -1074,8 +1321,12 @@ async function startSession(){
   renderCounts();
   // Bug 3: เริ่ม realtime sync
   subscribeCountItems(data.id);
-  // โหลด balance ของสาขานี้ (ตาม branch + วันที่นับ)
-  await loadBranchBalance(branch, date);
+  // โหลด balance, ยอดขาย, และ FOC ของสาขานี้
+  await Promise.all([
+    loadBranchBalance(branch, date),
+    loadSalesBalance(branch, date),
+    loadFocBalance(branch, date)
+  ]);
   // Pre-fill counter name in item form
   var cni = document.getElementById('counter-name-input');
   if(cni && !cni.value) cni.value = counter;
@@ -1096,10 +1347,11 @@ async function endSession(){
     toast('⚠️ รอบนี้ถูกจบไปแล้วโดยผู้ใช้อื่น');
     currentSession.status = 'completed';
     unsubscribeCountItems();
-    updateSessionUI(); return;
+    updateSessionUI(); return; // คง localStorage ไว้เช่นกัน
   }
   currentSession.status = 'completed';
-  localStorage.removeItem('nch_session_id');
+  // คง session_id ไว้ใน localStorage เพื่อ restore หลัง refresh (read-only)
+  // localStorage จะถูกล้างเมื่อ "เริ่มรอบใหม่" เท่านั้น
   unsubscribeCountItems();
   updateSessionUI();
   toast('✅ จบรอบนับแล้ว — Export Excel...');
@@ -1169,6 +1421,9 @@ async function addCount(bc, qty, soldQty, counterName, location){
     if(edErr){ toast('❌ แก้ไขไม่ได้: '+edErr.message); return; }
     if(!edData){ toast('⚠️ ไม่พบรายการที่แก้ไข อาจถูกลบไปแล้ว'); renderCounts(); return; }
     if(edIdx > -1) counts[edIdx] = edData; else counts.unshift(edData);
+    // บันทึก sold_qty ลง salesBal และ product_sales (source of truth ใหม่)
+    salesBal[bc] = soldQty;
+    if(currentSession){ var _sm={}; _sm[bc]=soldQty; saveSalesBalance(currentSession.branch, _sm, currentSession.count_date); }
     renderCounts(); updateSelCounted(bc);
     // บันทึก log ด้วย delta (qty ใหม่ - qty เดิม) ไม่ใช่ absolute qty
     // เพื่อให้ recomputeCountItem sum logs ได้ถูกต้องเสมอ
@@ -1223,6 +1478,20 @@ async function addCount(bc, qty, soldQty, counterName, location){
     return rcRow;
   }
 
+  // Normal mode → ตรวจ offline ก่อน
+  if(!navigator.onLine){
+    // Optimistic update ใน local ก่อน → queue ไปส่งทีหลัง
+    var offIdx = counts.findIndex(function(c){ return c.barcode === bc; });
+    var offBase = offIdx > -1 ? (parseInt(counts[offIdx].quantity)||0) : 0;
+    var offRow = offIdx > -1 ? Object.assign({}, counts[offIdx]) : { barcode: bc, product_name: p ? p.name : null, session_id: currentSession.id, quantity: 0, sold_qty: 0 };
+    offRow.quantity = offBase + qty;
+    if(offIdx > -1) counts[offIdx] = offRow; else counts.unshift(offRow);
+    renderCounts(); updateSelCounted(bc);
+    await pushOfflineQueue({ type:'addCount', sessionId: currentSession.id, bc: bc, qty: qty, soldQty: soldQty, counterName: counterName||null, location: location||null });
+    toast('📴 ออฟไลน์ — บันทึกชั่วคราว '+qty+' ชิ้น × '+(p?p.name:bc));
+    return;
+  }
+
   // Normal mode → atomic upsert ผ่าน RPC แล้ว patch location แยก (RPC ไม่รับ location param)
   setSyncDot('syncing');
   var { data: rpcRows, error: rpcErr } = await supabase.rpc('increment_count_qty', {
@@ -1232,6 +1501,19 @@ async function addCount(bc, qty, soldQty, counterName, location){
     p_sold_delta: soldQty,
     p_counter:    counterName || null
   });
+  // ตรวจว่าเป็น network error → queue แทน error
+  if(rpcErr && isNetworkError(rpcErr)){
+    setSyncDot('queued');
+    var offIdx2 = counts.findIndex(function(c){ return c.barcode === bc; });
+    var offBase2 = offIdx2 > -1 ? (parseInt(counts[offIdx2].quantity)||0) : 0;
+    var offRow2 = offIdx2 > -1 ? Object.assign({}, counts[offIdx2]) : { barcode: bc, product_name: p ? p.name : null, session_id: currentSession.id, quantity: 0, sold_qty: 0 };
+    offRow2.quantity = offBase2 + qty;
+    if(offIdx2 > -1) counts[offIdx2] = offRow2; else counts.unshift(offRow2);
+    renderCounts(); updateSelCounted(bc);
+    await pushOfflineQueue({ type:'addCount', sessionId: currentSession.id, bc: bc, qty: qty, soldQty: soldQty, counterName: counterName||null, location: location||null });
+    toast('⚠️ เน็ตขัดข้อง — บันทึกชั่วคราว จะส่งใหม่อัตโนมัติ');
+    return;
+  }
   setSyncDot(rpcErr ? 'off' : 'on');
   if(rpcErr){ toast('❌ บันทึกไม่ได้: '+rpcErr.message); return; }
   var newRow = rpcRows && rpcRows[0];
@@ -1306,16 +1588,21 @@ function renderCounts(){
     counts.forEach(function(c){ if(c.barcode) countedSet[c.barcode] = true; });
     var missingBcs = Object.keys(_recountBarcodes).filter(function(bc){ return !countedSet[bc]; });
     virtualHtml = missingBcs.map(function(bc){
-      var p   = prods[bc] || {};
-      var bal = getBal(bc);
-      return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto;border-left:3px solid #e74c3c;background:#fff5f5;cursor:pointer" onclick="selectByBarcodeValue(\''+esc(bc)+'\');document.getElementById(\'scan-card\').scrollIntoView({behavior:\'smooth\',block:\'start\'})">'+
+      var p    = prods[bc] || {};
+      var bal  = getBal(bc);
+      var vSold = getSales(bc);
+      var vFoc  = getFoc(bc);
+      var vDiff = (0 + vSold + vFoc) - bal;
+      var vDc   = vDiff < 0 ? 'color:#e74c3c' : vDiff > 0 ? 'color:#27ae60' : 'color:#888';
+      return '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto auto;border-left:3px solid #e74c3c;background:#fff5f5;cursor:pointer" onclick="selectByBarcodeValue(\''+esc(bc)+'\');document.getElementById(\'scan-card\').scrollIntoView({behavior:\'smooth\',block:\'start\'})">'+
         '<div><div class="cnt-name">'+esc(p.name||bc)+
         '<span class="recount-item-badge" style="background:#e74c3c">⚠️ ยังไม่ได้นับ</span></div>'+
         '<div class="cnt-bc">'+esc(bc)+'</div></div>'+
         '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">คงเหลือ<br><b style="font-size:14px;color:#555">'+bal+'</b></div>'+
         '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">นับจริง<br><b style="font-size:14px;color:#aaa">0</b></div>'+
-        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">ขาย<br><b style="font-size:14px;color:#aaa">—</b></div>'+
-        '<div style="min-width:36px;text-align:center;font-weight:700;font-size:14px;color:#e74c3c">'+(-bal)+'</div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">ขาย<br><b style="font-size:14px;color:#e67e22">'+(vSold||'—')+'</b></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">FOC<br><b style="font-size:14px;color:#27ae60">'+(vFoc||'—')+'</b></div>'+
+        '<div style="min-width:36px;text-align:center;font-weight:700;font-size:14px;'+vDc+'">'+(vDiff>=0?'+':'')+vDiff+'</div>'+
         '<button onclick="event.stopPropagation();selectByBarcodeValue(\''+esc(bc)+'\');document.getElementById(\'scan-card\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" '+
           'style="background:#6c3483;color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;white-space:nowrap">📝 นับ</button>'+
         '</div>';
@@ -1325,10 +1612,12 @@ function renderCounts(){
   el.innerHTML = virtualHtml + filtered.map(function(c){
     var p = prods[c.barcode] || {};
     var bal = getBal(c.barcode);
-    var sold = parseFloat(c.sold_qty)||0;
-    var diff = (c.quantity + sold) - bal;
+    var sold = getSales(c.barcode);
+    var foc  = getFoc(c.barcode);
+    var diff = (c.quantity + sold + foc) - bal;
     var dc = diff<0?'color:#e74c3c':diff>0?'color:#27ae60':'color:#888';
     var soldBadge = sold>0 ? '<span style="background:#fdebd0;color:#e67e22;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px">ขาย '+sold+'</span>' : '';
+    var focBadge  = foc>0  ? '<span style="background:#e8f8f0;color:#27ae60;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px">FOC '+foc+'</span>' : '';
     var ctrBadge = c.counter_name ? '<span style="background:#f0e8ff;color:#6c3483;border-radius:8px;padding:1px 7px;font-size:10px;margin-left:4px">👤 '+esc(c.counter_name)+'</span>' : '';
     var needRc   = _recountMode && _recountBarcodes[c.barcode];
     var rcBadge  = needRc ? '<span class="recount-item-badge">ต้องซ่อม</span>' : '';
@@ -1337,12 +1626,13 @@ function renderCounts(){
     var locBadge = c.location ? '<span style="background:#e8f5e9;color:#2e7d32;border-radius:8px;padding:1px 7px;font-size:10px;margin-left:4px">📍 '+esc(c.location)+'</span>' : '';
     var logToggle = '<span id="log-toggle-'+c.id+'" onclick="toggleCountLog(\''+esc(c.barcode)+'\',\''+c.id+'\')" style="color:#b39ddb;font-size:10px;font-family:monospace;cursor:pointer;margin-left:6px" title="ดูประวัติการสแกน">'+(tStr ? '🕐 '+tStr+' ▸' : '📋 ▸')+'</span>';
     return '<div style="margin-bottom:6px">'+
-      '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto;margin-bottom:0;'+itemBg+'">'+
-        '<div><div class="cnt-name">'+esc(c.product_name||'ไม่ทราบชื่อ')+rcBadge+soldBadge+ctrBadge+locBadge+'</div>'+
+      '<div class="cnt-item" style="grid-template-columns:1fr auto auto auto auto auto;margin-bottom:0;'+itemBg+'">'+
+        '<div><div class="cnt-name">'+esc(c.product_name||'ไม่ทราบชื่อ')+rcBadge+soldBadge+focBadge+ctrBadge+locBadge+'</div>'+
         '<div class="cnt-bc">'+esc(c.barcode||'')+logToggle+'</div></div>'+
         '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">คงเหลือ<br><b style="font-size:14px;color:#555">'+bal+'</b></div>'+
         '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">นับจริง<br><b style="font-size:14px;color:#6c3483">'+c.quantity+'</b></div>'+
         '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">ขาย<br><b style="font-size:14px;color:#e67e22">'+(sold||'—')+'</b></div>'+
+        '<div style="text-align:center;font-size:11px;color:#888;padding:0 4px">FOC<br><b style="font-size:14px;color:#27ae60">'+(foc||'—')+'</b></div>'+
         '<div style="min-width:40px;text-align:center;font-weight:700;font-size:14px;'+dc+'">'+(diff>=0?'+':'')+diff+'</div>'+
       '</div>'+
       '<div id="log-inline-'+c.id+'" style="display:none;background:#faf8ff;border:1px solid #e8e0f0;border-top:none;border-radius:0 0 10px 10px;padding:10px 12px;font-size:12px"></div>'+
@@ -1366,8 +1656,9 @@ async function editCountItem(id){
   document.getElementById('sel-counted').textContent = getCountedQty(bc);
   var bal = _bal;
   var existQty = parseFloat(c.quantity)||0;
-  var existSold = parseFloat(c.sold_qty)||0;
-  var diff = (existQty + existSold) - bal;
+  var existSold = getSales(c.barcode);
+  var existFoc  = getFoc(c.barcode);
+  var diff = (existQty + existSold + existFoc) - bal;
   var dc = diff<0?'#e74c3c':diff>0?'#27ae60':'#888';
   var diffEl = document.getElementById('sel-diff');
   diffEl.textContent = (diff>=0?'+':'')+diff;
@@ -1377,7 +1668,7 @@ async function editCountItem(id){
   document.getElementById('count-form').style.display = '';
   // ใส่ค่าเดิม
   document.getElementById('qty-input').value = c.quantity;
-  document.getElementById('sold-input').value = c.sold_qty||0;
+  document.getElementById('sold-input').value = getSales(bc)||0;
   document.getElementById('counter-name-input').value = c.counter_name||'';
   var locEl = document.getElementById('location-input');
   if(locEl) locEl.value = c.location||'';
@@ -1409,7 +1700,7 @@ function renderSalesList(){
   var totalBar = document.getElementById('sales-total-bar');
   var totalQtyEl = document.getElementById('sales-total-qty');
 
-  var items = counts.filter(function(c){ return (parseFloat(c.sold_qty)||0) > 0; });
+  var items = counts.filter(function(c){ return getSales(c.barcode) > 0; });
   var allItems = counts.slice();
 
   if(!allItems.length){
@@ -1421,7 +1712,7 @@ function renderSalesList(){
 
   var totalSold = 0;
   el.innerHTML = allItems.map(function(c){
-    var sold = parseFloat(c.sold_qty)||0;
+    var sold = getSales(c.barcode);
     totalSold += sold;
     var soldColor = sold > 0 ? '#e67e22' : '#bbb';
     var soldText  = sold > 0 ? sold.toLocaleString()+' ชิ้น' : '—';
@@ -1561,37 +1852,50 @@ async function startRecount(sessionId, branch, date){
   if(rcItemErr){ toast('❌ '+rcItemErr.message); return; }
   sessData.count_items = rcItems || [];
 
-  // Build rptBal for this branch+date
-  var rBal = {};
-  var { data: balData } = await supabase.from('product_balances')
-    .select('barcode,balance').eq('branch', branch).eq('balance_date', date);
+  // Build rptBal + rSales + rFoc for this branch+date
+  var rBal = {}, rSales = {}, rFoc = {};
+  var [{ data: balData }, { data: salesData }, { data: focDataRc }] = await Promise.all([
+    supabase.from('product_balances').select('barcode,balance').eq('branch', branch).eq('balance_date', date),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', branch).eq('sale_date', date),
+    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', branch).eq('foc_date', date)
+  ]);
   if(balData) balData.forEach(function(r){ rBal[r.barcode] = parseFloat(r.balance)||0; });
+  if(salesData) salesData.forEach(function(r){ rSales[r.barcode] = parseFloat(r.sold_qty)||0; });
+  if(focDataRc) focDataRc.forEach(function(r){ rFoc[r.barcode] = parseFloat(r.foc_qty)||0; });
 
   // Aggregate to find diff ≠ 0
   var aggMap = {};
   (sessData.count_items||[]).forEach(function(i){
     var key = i.barcode || i.product_name || '?';
-    if(!aggMap[key]) aggMap[key] = { barcode: i.barcode, quantity: 0, sold_qty: 0 };
-    aggMap[key].quantity  += i.quantity;
-    aggMap[key].sold_qty  += parseFloat(i.sold_qty)||0;
+    if(!aggMap[key]) aggMap[key] = { barcode: i.barcode, quantity: 0, sold_qty: 0, foc_qty: 0 };
+    aggMap[key].quantity += i.quantity;
+  });
+  // Apply sold_qty and foc_qty from DB (fall back to count_items.sold_qty for old sessions)
+  Object.values(aggMap).forEach(function(a){
+    a.sold_qty = rSales[a.barcode] !== undefined ? rSales[a.barcode]
+      : (sessData.count_items||[]).reduce(function(t,i){ return i.barcode===a.barcode ? t+(parseFloat(i.sold_qty)||0) : t; },0);
+    a.foc_qty = rFoc[a.barcode] || 0;
   });
 
   // รวมสินค้าที่มียอดคงเหลือใน product_balances แต่ยังไม่มี count_items
-  // (diff = 0+0 - balance ≠ 0 → ต้องนับซ่อม)
+  // (diff = 0+0+0 - balance ≠ 0 → ต้องนับซ่อม)
   Object.keys(rBal).forEach(function(bc){
     if(!aggMap[bc] && rBal[bc] > 0){
-      aggMap[bc] = { barcode: bc, quantity: 0, sold_qty: 0 };
+      aggMap[bc] = { barcode: bc, quantity: 0, sold_qty: rSales[bc]||0, foc_qty: rFoc[bc]||0 };
     }
   });
 
   var diffBarcodes = {};
   Object.values(aggMap).forEach(function(a){
     var bal  = rBal[a.barcode] || 0;
-    var diff = (a.quantity + a.sold_qty) - bal;
+    var diff = (a.quantity + a.sold_qty + a.foc_qty) - bal;
     if(diff !== 0) diffBarcodes[a.barcode] = true;
   });
 
   if(!Object.keys(diffBarcodes).length){
+    // ล้าง recount_by lock ที่ set ไปก่อนหน้า ป้องกัน lock ค้าง
+    await supabase.from('count_sessions').update({ recount_by: null }).eq('id', sessionId);
+    setSyncDot('on');
     toast('✅ ไม่มีรายการที่ผลต่าง ≠ 0 ไม่ต้องนับซ่อม'); return;
   }
 
@@ -1609,9 +1913,13 @@ async function startRecount(sessionId, branch, date){
   currentSession = sessData;
   counts = sessData.count_items || [];
 
-  // Load branch balance
+  // Load branch balance, sales balance, and FOC balance
   branchBal = {};
   if(balData) balData.forEach(function(r){ branchBal[r.barcode] = parseFloat(r.balance)||0; });
+  salesBal = {};
+  if(salesData) salesData.forEach(function(r){ salesBal[r.barcode] = parseFloat(r.sold_qty)||0; });
+  focBal = {};
+  if(focDataRc) focDataRc.forEach(function(r){ focBal[r.barcode] = parseFloat(r.foc_qty)||0; });
 
   // Fill branch/date/counter UI
   document.getElementById('sess-branch').value  = branch;
@@ -1653,10 +1961,26 @@ async function exitRecountMode(){
     counts = _prevCounts;
     localStorage.setItem('nch_session_id', currentSession.id);
     subscribeCountItems(currentSession.id);
+    // Reload branchBal/salesBal/focBal ให้ตรงกับ session เดิม
+    // (อาจต่างสาขา/วันที่กับ session ที่เพิ่งซ่อม)
+    var _pb = currentSession.branch, _pd = currentSession.count_date;
+    branchBal = {}; salesBal = {}; focBal = {};
+    Promise.all([
+      supabase.from('product_balances').select('barcode,balance').eq('branch',_pb).eq('balance_date',_pd),
+      supabase.from('product_sales').select('barcode,sold_qty').eq('branch',_pb).eq('sale_date',_pd),
+      supabase.from('product_foc').select('barcode,foc_qty').eq('branch',_pb).eq('foc_date',_pd)
+    ]).then(function(results){
+      var bd = results[0].data, sd = results[1].data, fd = results[2].data;
+      if(bd) bd.forEach(function(r){ branchBal[r.barcode] = parseFloat(r.balance)||0; });
+      if(sd) sd.forEach(function(r){ salesBal[r.barcode]  = parseFloat(r.sold_qty)||0; });
+      if(fd) fd.forEach(function(r){ focBal[r.barcode]    = parseFloat(r.foc_qty)||0; });
+      renderCounts();
+    });
     toast('✅ ออกจากโหมดนับซ่อม — กลับสู่รอบนับเดิม');
   } else {
     currentSession = null;
     counts = [];
+    branchBal = {}; salesBal = {}; focBal = {};
     localStorage.removeItem('nch_session_id');
     toast('✅ ออกจากโหมดนับซ่อมแล้ว — กลับสู่โหมดนับปกติ');
   }
@@ -1757,80 +2081,245 @@ async function processSalesRows(raw, input, branch, date){
     : ' [Summary mode: '+keys.length+' items]';
   statusEl.textContent = 'ข้อมูล'+modeLabel;
 
-  // Find session matching branch + date
+  // ── บันทึกลง product_sales (barcode+branch+sale_date) ──
   setSyncDot('syncing');
-  statusEl.textContent = 'กำลังค้นหา session สาขา "'+branch+'" วันที่ '+date+'...';
-  var { data: sessions, error: sessErr } = await supabase.from('count_sessions')
-    .select('id').eq('branch', branch).eq('count_date', date);
-  if(sessErr){ setSyncDot('off'); statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+sessErr.message; return; }
+  statusEl.textContent = 'กำลังบันทึกยอดขาย '+keys.length+' รายการ → product_sales...';
+
+  // ตรวจว่า branch มี session ตรงวันที่หรือไม่ (warn เท่านั้น ไม่ block)
+  var { data: sessions } = await supabase.from('count_sessions')
+    .select('id').eq('branch', branch).eq('count_date', date).limit(1);
   if(!sessions || !sessions.length){
-    setSyncDot('off'); statusEl.style.color='#e74c3c';
-    statusEl.textContent='⚠️ ไม่พบ Session สาขา "'+branch+'" วันที่ '+date;
-    input.value=''; return;
-  }
-  var sessionIds = sessions.map(function(s){ return s.id; });
-
-  // Fetch all count_items for those sessions
-  statusEl.textContent = 'กำลังดึงรายการนับ...';
-  var { data: items, error: itemErr } = await supabase.from('count_items')
-    .select('id,barcode,product_code,product_name,sold_qty')
-    .in('session_id', sessionIds);
-  if(itemErr){ setSyncDot('off'); statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+itemErr.message; return; }
-  if(!items || !items.length){
-    setSyncDot('off'); statusEl.style.color='#e74c3c';
-    statusEl.textContent='⚠️ ยังไม่มีรายการนับใน Session นี้';
-    input.value=''; return;
+    statusEl.style.color = '#e67e22';
+    statusEl.textContent = '⚠️ ยังไม่มี Session สาขา "'+branch+'" วันที่ '+date+' แต่จะบันทึกยอดขายไว้ก่อน';
   }
 
-  // Match each count_item to soldMap via barcode or product_code
-  var updates = [];
-  items.forEach(function(it){
-    var sold = soldMap[it.barcode] !== undefined ? soldMap[it.barcode]
-             : soldMap[it.product_code] !== undefined ? soldMap[it.product_code]
-             : null;
-    if(sold !== null) updates.push({ id: it.id, sold_qty: sold });
+  // Match barcode จาก soldMap กับ products (รองรับทั้ง barcode และ product_code)
+  var finalSoldMap = {}; // barcode → sold_qty
+  var matched = 0;
+  Object.keys(soldMap).forEach(function(code){
+    // ลอง match barcode ตรง
+    if(prods[code]){
+      finalSoldMap[code] = soldMap[code]; matched++;
+    } else {
+      // ลอง match product_code
+      var found = Object.values(prods).find(function(p){ return p.product_code === code; });
+      if(found){ finalSoldMap[found.barcode] = soldMap[code]; matched++; }
+      else {
+        // ไม่มีใน Master → บันทึก barcode เป็น code ตรงๆ (เผื่อนำเข้าสินค้าใหม่ทีหลัง)
+        finalSoldMap[code] = soldMap[code]; matched++;
+      }
+    }
   });
 
-  if(!updates.length){
-    setSyncDot('off'); statusEl.style.color='#e74c3c';
-    statusEl.textContent='⚠️ ไม่พบรหัสที่ตรงกับรายการนับ ('+keys.length+' รหัสในไฟล์, '+items.length+' รายการใน Session)';
-    input.value=''; return;
-  }
+  var saveErr = await saveSalesBalance(branch, finalSoldMap, date);
+  setSyncDot(saveErr ? 'off' : 'on');
+  if(saveErr){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ บันทึกไม่ได้: '+saveErr.message; return; }
 
-  statusEl.textContent = 'กำลังอัปเดต '+updates.length+' รายการ...';
-  var BATCH=50, done=0, errMsg='';
-  for(var b=0; b<updates.length; b+=BATCH){
-    var chunk = updates.slice(b, b+BATCH);
-    // Update each individually (Supabase doesn't support bulk update with different values)
-    for(var j=0; j<chunk.length; j++){
-      var u = chunk[j];
-      var { error: uErr } = await supabase.from('count_items')
-        .update({ sold_qty: u.sold_qty }).eq('id', u.id);
-      if(uErr){ errMsg = uErr.message; break; }
-      done++;
-    }
-    if(errMsg) break;
-    statusEl.textContent = 'กำลังอัปเดต '+done+'/'+updates.length+'...';
-  }
-
-  setSyncDot(errMsg ? 'off' : 'on');
-  if(errMsg){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+errMsg; return; }
-
-  statusEl.style.color='#27ae60';
-  var cancelNote = (hasNeg && cancelledCount > 0) ? ' | ยกเลิกหมด '+cancelledCount+' รหัส (sold=0)' : '';
-  statusEl.textContent='✅ อัปเดตยอดขาย '+done+' รายการสำเร็จ — '+keys.length+' รหัสมียอดสุทธิ'+cancelNote;
-  toast('✅ อัปเดตยอดขาย '+done+' รายการ สาขา "'+branch+'"');
-
-  // If current session matches → refresh local counts + sales page
+  // อัปเดต salesBal ใน memory ทันที (ถ้า session ตรง)
   if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
-    updates.forEach(function(u){
-      var idx = counts.findIndex(function(c){ return c.id===u.id; });
-      if(idx > -1) counts[idx].sold_qty = u.sold_qty;
-    });
+    Object.assign(salesBal, finalSoldMap);
     renderCounts();
     renderSalesList();
   }
-  // Refresh report tab if it's currently open
+
+  statusEl.style.color='#27ae60';
+  var cancelNote = (hasNeg && cancelledCount > 0) ? ' | ยกเลิกหมด '+cancelledCount+' รหัส' : '';
+  statusEl.textContent='✅ บันทึกยอดขาย '+matched+' รายการ → product_sales สาขา "'+branch+'" วันที่ '+date+cancelNote;
+  toast('✅ บันทึกยอดขาย '+matched+' รายการ สาขา "'+branch+'"');
+
+  if(typeof activePage !== 'undefined' && activePage === 'report') loadReport();
+  input.value='';
+}
+
+// ═══════════════════════════════════════
+//  Import FOC from Excel (Settings tab)
+// ═══════════════════════════════════════
+// ── FOC upload history helpers ──────────────────────────────────────
+function _focLsKey(branch, date){ return 'foc_files_' + branch + '_' + date; }
+function _getFocHistory(branch, date){
+  try { return JSON.parse(localStorage.getItem(_focLsKey(branch, date)) || '[]'); } catch(e){ return []; }
+}
+function _addFocHistory(branch, date, fileName, fp){
+  try {
+    var arr = _getFocHistory(branch, date);
+    arr.push({ fp: fp, name: fileName, ts: new Date().toISOString() });
+    localStorage.setItem(_focLsKey(branch, date), JSON.stringify(arr));
+  } catch(e){}
+}
+function _clearFocHistory(branch, date){
+  try { localStorage.removeItem(_focLsKey(branch, date)); } catch(e){}
+}
+function updateFocUploadHistory(branch, date){
+  var el = document.getElementById('foc-upload-history'); if(!el) return;
+  var arr = _getFocHistory(branch, date);
+  if(!arr.length){ el.innerHTML = ''; return; }
+  var html = '<div style="border-top:1px solid #ddd;padding-top:6px;margin-top:4px"><strong>ไฟล์ที่อัพโหลดแล้ว ('+branch+' / '+date+'):</strong><ul style="margin:4px 0 0 16px;padding:0">';
+  arr.forEach(function(u){ html += '<li>'+u.name+' <span style="color:#aaa">('+u.ts.replace('T',' ').slice(0,16)+')</span></li>'; });
+  html += '</ul></div>';
+  el.innerHTML = html;
+}
+
+async function clearFocBalance(){
+  var branch = document.getElementById('foc-import-branch').value;
+  var date   = document.getElementById('foc-import-date').value;
+  if(!branch || !date){ toast('⚠️ เลือกสาขาและวันที่ก่อน'); return; }
+  if(!confirm('ล้างข้อมูล FOC ทั้งหมดของสาขา "'+branch+'" วันที่ '+date+' ใช่ไหม?')) return;
+  setSyncDot('syncing');
+  var { error } = await supabase.from('product_foc').delete()
+    .eq('branch', branch).eq('foc_date', date);
+  setSyncDot(error ? 'off' : 'on');
+  if(error){ toast('❌ ล้างไม่ได้: '+error.message); return; }
+  _clearFocHistory(branch, date);
+  updateFocUploadHistory(branch, date);
+  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+    focBal = {}; renderCounts();
+  }
+  document.getElementById('import-foc-status').textContent = '';
+  document.getElementById('foc-force-upload-btn').style.display = 'none';
+  window._pendingFocFile = null;
+  toast('✅ ล้าง FOC สาขา "'+branch+'" วันที่ '+date+' เรียบร้อย');
+}
+
+function refreshFocHistory(){
+  var branch = document.getElementById('foc-import-branch').value;
+  var date   = document.getElementById('foc-import-date').value;
+  updateFocUploadHistory(branch, date);
+  document.getElementById('import-foc-status').textContent = '';
+  document.getElementById('foc-force-upload-btn').style.display = 'none';
+  window._pendingFocFile = null;
+}
+
+function importFocXLSX(input){
+  var branch = document.getElementById('foc-import-branch').value;
+  var date   = document.getElementById('foc-import-date').value;
+  if(!branch){ toast('⚠️ เลือกสาขาก่อนนำเข้าไฟล์ FOC'); input.value=''; return; }
+  if(!date)  { toast('⚠️ เลือกวันที่ให้ตรงกับ Session การนับ'); input.value=''; return; }
+  var file = input.files[0]; if(!file) return;
+
+  // ตรวจ duplicate file (fingerprint = ชื่อ + ขนาด + lastModified)
+  var fp = file.name + '|' + file.size + '|' + file.lastModified;
+  var history = _getFocHistory(branch, date);
+  var isDup = history.some(function(u){ return u.fp === fp; });
+  if(isDup){
+    var statusEl = document.getElementById('import-foc-status');
+    statusEl.style.color = '#e67e22';
+    statusEl.textContent = '⚠️ ไฟล์ "'+file.name+'" เคยอัพโหลดแล้ว! ถ้าต้องการบวกซ้ำให้กด "อัพโหลดซ้ำ (ยืนยัน)"';
+    document.getElementById('foc-force-upload-btn').style.display = '';
+    window._pendingFocFile = { file: file, branch: branch, date: date, fp: fp };
+    input.value = ''; return;
+  }
+
+  document.getElementById('foc-force-upload-btn').style.display = 'none';
+  window._pendingFocFile = null;
+  _readFocFile(file, input, branch, date, fp);
+}
+
+function forceImportFoc(){
+  var p = window._pendingFocFile; if(!p) return;
+  document.getElementById('foc-force-upload-btn').style.display = 'none';
+  window._pendingFocFile = null;
+  _readFocFile(p.file, { value: '' }, p.branch, p.date, p.fp);
+}
+
+function _readFocFile(file, input, branch, date, fp){
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      var wb = XLSX.read(e.target.result, {type:'array'});
+      var ws = wb.Sheets[wb.SheetNames[0]];
+      var raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      processFocRows(raw, input, branch, date, fp, file.name);
+    } catch(ex){ toast('❌ อ่านไฟล์ไม่ได้: '+ex.message); input.value=''; }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function processFocRows(raw, input, branch, date, fp, fileName){
+  var statusEl = document.getElementById('import-foc-status');
+  statusEl.style.color = '#555';
+  statusEl.textContent = 'กำลังอ่านข้อมูล FOC...';
+
+  var isHeader = function(v){ return !v || /^(barcode|code|รหัส|description|item.?number|รายการ|foc|qty|uom|หน่วย|ราคา|price|balance|คงเหลือ|quantity)/i.test(String(v)); };
+
+  var rawRows = [];
+  for(var i=0; i<raw.length; i++){
+    var r = raw[i];
+    var c0 = String(r[0]||'').trim();
+    var c1 = String(r[1]||'').trim();
+    if(!c0) continue;
+    if(isHeader(c0)) continue;
+    var qty = parseFloat(c1);
+    if(isNaN(qty)) continue;
+    rawRows.push({ code: c0, qty: qty });
+  }
+
+  // Aggregate: sum per item code (positive values only — FOC is always positive)
+  var aggMap = {};
+  rawRows.forEach(function(r){ aggMap[r.code] = (aggMap[r.code] || 0) + r.qty; });
+
+  var focMap = {}; // barcode → foc_qty
+  Object.keys(aggMap).forEach(function(code){
+    var net = aggMap[code];
+    if(net > 0) focMap[code] = net;
+  });
+
+  var keys = Object.keys(focMap);
+  if(!keys.length){
+    statusEl.style.color='#e74c3c';
+    statusEl.textContent='⚠️ ไม่พบข้อมูล FOC (ต้องมี 2 คอลัมน์: รหัสสินค้า, จำนวน FOC)';
+    input.value=''; return;
+  }
+
+  statusEl.textContent = 'ข้อมูล FOC: '+keys.length+' รายการ';
+
+  setSyncDot('syncing');
+  statusEl.textContent = 'กำลังบันทึก FOC '+keys.length+' รายการ → product_foc...';
+
+  // Match barcode จาก focMap กับ products
+  var finalFocMap = {};
+  var matched = 0;
+  Object.keys(focMap).forEach(function(code){
+    if(prods[code]){
+      finalFocMap[code] = focMap[code]; matched++;
+    } else {
+      var found = Object.values(prods).find(function(p){ return p.product_code === code; });
+      if(found){ finalFocMap[found.barcode] = focMap[code]; matched++; }
+      else { finalFocMap[code] = focMap[code]; matched++; }
+    }
+  });
+
+  // ── โหลดค่า FOC เดิมจาก DB แล้วบวกสะสม (รองรับอัพโหลดหลายไฟล์) ──
+  setSyncDot('syncing');
+  statusEl.textContent = 'กำลังดึงข้อมูล FOC เดิม...';
+  var { data: existFocData, error: existFocErr } = await supabase.from('product_foc')
+    .select('barcode,foc_qty').eq('branch', branch).eq('foc_date', date);
+  var existFocMap = {};
+  if(!existFocErr && existFocData) existFocData.forEach(function(r){ existFocMap[r.barcode] = parseFloat(r.foc_qty)||0; });
+
+  // บวกค่าใหม่กับค่าเดิม (accumulate — ไม่ใช่ replace)
+  var accumulatedFocMap = Object.assign({}, existFocMap);
+  Object.keys(finalFocMap).forEach(function(bc){
+    accumulatedFocMap[bc] = (accumulatedFocMap[bc] || 0) + finalFocMap[bc];
+  });
+
+  var saveErr = await saveFocBalance(branch, accumulatedFocMap, date);
+  setSyncDot(saveErr ? 'off' : 'on');
+  if(saveErr){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ บันทึกไม่ได้: '+saveErr.message; return; }
+
+  // อัปเดต focBal ใน memory ทันที (ถ้า session ตรง) — ใช้ค่าสะสม ไม่ใช่แค่ค่าใหม่
+  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+    Object.keys(accumulatedFocMap).forEach(function(bc){ focBal[bc] = accumulatedFocMap[bc]; });
+    renderCounts();
+  }
+
+  // บันทึก fingerprint ลง localStorage เพื่อป้องกัน double upload
+  if(fp && fileName) _addFocHistory(branch, date, fileName, fp);
+  updateFocUploadHistory(branch, date);
+
+  statusEl.style.color='#27ae60';
+  statusEl.textContent='✅ บันทึก FOC '+matched+' รายการ (สะสมแล้ว) → product_foc สาขา "'+branch+'" วันที่ '+date;
+  toast('✅ บันทึก FOC '+matched+' รายการ สาขา "'+branch+'"');
+
   if(typeof activePage !== 'undefined' && activePage === 'report') loadReport();
   input.value='';
 }
@@ -2006,9 +2495,13 @@ async function loadReport(){
   syncCurrentSessionToRptData();
   data = window._rptData;
 
-  // โหลด balance ต่อ session (รองรับทั้งกรณีกรองสาขาเดียวและทุกสาขา)
-  var sessionBalMap = {}; // sessionId → { barcode → balance }
+  // โหลด balance + sales + foc ต่อ session (รองรับทั้งกรณีกรองสาขาเดียวและทุกสาขา)
+  var sessionBalMap   = {};   // sessionId → { barcode → balance }
+  var sessionSalesMap = {};   // sessionId → { barcode → sold_qty }
+  var sessionFocMap   = {};   // sessionId → { barcode → foc_qty }
   var bdProcessed = {};
+  var sdProcessed = {};
+  var fdProcessed = {};
   for(var _si=0; _si<(data||[]).length; _si++){
     var _s = data[_si];
     var _bdKey = _s.branch+'|'+_s.count_date;
@@ -2019,7 +2512,23 @@ async function loadReport(){
       if(_bd) _bd.forEach(function(r){ _bm[r.barcode] = parseFloat(r.balance)||0; });
       bdProcessed[_bdKey] = _bm;
     }
-    sessionBalMap[_s.id] = bdProcessed[_bdKey];
+    if(!sdProcessed[_bdKey]){
+      var { data: _sd } = await supabase.from('product_sales')
+        .select('barcode,sold_qty').eq('branch', _s.branch).eq('sale_date', _s.count_date);
+      var _sm = {};
+      if(_sd) _sd.forEach(function(r){ _sm[r.barcode] = parseFloat(r.sold_qty)||0; });
+      sdProcessed[_bdKey] = _sm;
+    }
+    if(!fdProcessed[_bdKey]){
+      var { data: _fd } = await supabase.from('product_foc')
+        .select('barcode,foc_qty').eq('branch', _s.branch).eq('foc_date', _s.count_date);
+      var _fm = {};
+      if(_fd) _fd.forEach(function(r){ _fm[r.barcode] = parseFloat(r.foc_qty)||0; });
+      fdProcessed[_bdKey] = _fm;
+    }
+    sessionBalMap[_s.id]   = bdProcessed[_bdKey];
+    sessionSalesMap[_s.id] = sdProcessed[_bdKey];
+    sessionFocMap[_s.id]   = fdProcessed[_bdKey];
   }
   // ตรวจอีกครั้งหลัง balance loop (ใช้เวลานาน)
   if(myVersion !== _loadReportVersion){ setSyncDot('on'); return; }
@@ -2040,8 +2549,17 @@ async function loadReport(){
   if(!totalSess){ el.innerHTML='<div class="empty"><div class="em-icon">📊</div><p>ไม่มีข้อมูล</p></div>'; return; }
 
   el.innerHTML = (data||[]).map(function(s, si){
-    var _sessbal = sessionBalMap[s.id] || {};
-    var getRptBal = function(bc){ return _sessbal[bc] !== undefined ? _sessbal[bc] : 0; };
+    var _sessbal   = sessionBalMap[s.id] || {};
+    var _sesssales = sessionSalesMap[s.id] || {};
+    var _sessfoc   = sessionFocMap[s.id] || {};
+    var getRptBal   = function(bc){ return _sessbal[bc] !== undefined ? _sessbal[bc] : 0; };
+    var getRptSales = function(bc){
+      if(_sesssales[bc] !== undefined) return _sesssales[bc];
+      var t = 0;
+      (s.count_items||[]).forEach(function(i){ if(i.barcode===bc) t += parseFloat(i.sold_qty)||0; });
+      return t;
+    };
+    var getRptFoc = function(bc){ return _sessfoc[bc] !== undefined ? _sessfoc[bc] : 0; };
     var items = s.count_items || [];
     var isDone = s.status === 'completed';
 
@@ -2054,12 +2572,11 @@ async function loadReport(){
         aggMap[key] = {
           barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
           product_name: i.product_name||prod.name||'', unit: i.unit||prod.unit||'ชิ้น',
-          quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0,
+          quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(prod.price)||0,
           balance: getRptBal(i.barcode), uncounted: false
         };
       }
       aggMap[key].quantity += i.quantity;
-      aggMap[key].sold_qty += parseFloat(i.sold_qty)||0;
     });
 
     // ─── เพิ่มสินค้าที่ยังไม่ได้นับจาก Master Product ───
@@ -2069,10 +2586,15 @@ async function loadReport(){
         aggMap[key] = {
           barcode: p.barcode||'', product_code: p.product_code||'',
           product_name: p.name||'', unit: p.unit||'ชิ้น',
-          quantity: 0, sold_qty: 0, price: parseFloat(p.price)||0,
+          quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(p.price)||0,
           balance: getRptBal(p.barcode), uncounted: true
         };
       }
+    });
+    // ใส่ sold_qty และ foc_qty จาก DB — ทำหลังเพิ่ม uncounted
+    Object.values(aggMap).forEach(function(a){
+      a.sold_qty = getRptSales(a.barcode);
+      a.foc_qty  = getRptFoc(a.barcode);
     });
 
     var aggItems = Object.values(aggMap);
@@ -2105,7 +2627,6 @@ async function loadReport(){
       var ctr = raw.counter_name || '(ไม่ระบุชื่อ)';
       if(!counterMap[ctr]) counterMap[ctr] = { qty: 0, sold: 0, count: 0 };
       counterMap[ctr].qty   += raw.quantity;
-      counterMap[ctr].sold  += parseFloat(raw.sold_qty)||0;
       counterMap[ctr].count += 1;
     });
     var counterNames = Object.keys(counterMap);
@@ -2125,7 +2646,7 @@ async function loadReport(){
     }
 
     // ─── diff ≠ 0 items (for recount) ───
-    var diffItems = countedItems.filter(function(i){ return (i.quantity+(i.sold_qty||0))-i.balance !== 0; });
+    var diffItems = countedItems.filter(function(i){ return (i.quantity+(i.sold_qty||0)+(i.foc_qty||0))-i.balance !== 0; });
     // แสดงปุ่มนับซ่อมสำหรับทุก session ที่ completed (startRecount จะแจ้งเองถ้าไม่มีรายการต้องซ่อม)
     var recountLabel = diffItems.length > 0 ? '🔄 นับซ่อม ('+diffItems.length+')' : '🔄 นับซ่อม';
     var recountBtn = isDone
@@ -2135,7 +2656,7 @@ async function loadReport(){
       : '';
 
     var tableRows = aggItems.map(function(i, idx){
-      var diff    = (i.quantity + (i.sold_qty||0)) - i.balance;
+      var diff    = (i.quantity + (i.sold_qty||0) + (i.foc_qty||0)) - i.balance;
       var diffClr = diff < 0 ? '#e74c3c' : diff > 0 ? '#27ae60' : '#888';
       var diffTxt = (diff > 0 ? '+' : '') + diff.toLocaleString();
       var needRecount = !i.uncounted && diff !== 0;
@@ -2154,6 +2675,7 @@ async function loadReport(){
         '<td style="text-align:right">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
         '<td style="text-align:right;font-weight:700;color:'+(i.uncounted?'#bbb':'#6c3483')+'">'+i.quantity.toLocaleString()+'</td>'+
         '<td style="text-align:right;color:#e67e22">'+(i.sold_qty?i.sold_qty.toLocaleString():'—')+'</td>'+
+        '<td style="text-align:right;color:#27ae60">'+(i.foc_qty?i.foc_qty.toLocaleString():'—')+'</td>'+
         '<td style="text-align:right;font-weight:700;color:'+(i.uncounted?'#bbb':diffClr)+'">'+diffTxt+'</td>'+
         '</tr>';
     }).join('');
@@ -2206,6 +2728,7 @@ async function loadReport(){
       '<th style="text-align:right">คงเหลือ<br><small style="font-weight:400;color:#888">Balance</small></th>'+
       '<th style="text-align:right">นับจริง<br><small style="font-weight:400;color:#888">Count</small></th>'+
       '<th style="text-align:right">จำนวนขาย<br><small style="font-weight:400;color:#888">Sold</small></th>'+
+      '<th style="text-align:right">FOC<br><small style="font-weight:400;color:#888">Free</small></th>'+
       '<th style="text-align:right">ผลต่าง<br><small style="font-weight:400;color:#888">Diff</small></th>'+
       '</tr></thead><tbody>'+tableRows+
       '</tbody><tfoot>'+
@@ -2258,16 +2781,31 @@ async function buildAggData(){
   var data = window._rptData;
   if(!data || !data.length){ return null; }
   var results = [];
+  var bdCache = {}, sdCache = {}, fdCache = {};
   for(var si=0; si<data.length; si++){
     var s = data[si];
-    // โหลด balance ของสาขา+วันที่ของ session นั้น
-    var sBal = {};
-    if(s.branch && s.count_date){
-      var { data: sbData } = await supabase.from('product_balances')
-        .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
-      if(sbData) sbData.forEach(function(r){ sBal[r.barcode] = parseFloat(r.balance)||0; });
+    var _cacheKey = s.branch+'|'+s.count_date;
+    // โหลด balance + sales + foc ของสาขา+วันที่ของ session นั้น
+    if(!bdCache[_cacheKey]){
+      var [{ data: sbData }, { data: ssData }, { data: sfData }] = await Promise.all([
+        supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
+        supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
+        supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+      ]);
+      var bm = {}; if(sbData) sbData.forEach(function(r){ bm[r.barcode] = parseFloat(r.balance)||0; });
+      var sm = {}; if(ssData) ssData.forEach(function(r){ sm[r.barcode] = parseFloat(r.sold_qty)||0; });
+      var fm = {}; if(sfData) sfData.forEach(function(r){ fm[r.barcode] = parseFloat(r.foc_qty)||0; });
+      bdCache[_cacheKey] = bm; sdCache[_cacheKey] = sm; fdCache[_cacheKey] = fm;
     }
-    var getSBal = function(bc){ return sBal[bc] !== undefined ? sBal[bc] : 0; };
+    var sBal   = bdCache[_cacheKey];
+    var sSales = sdCache[_cacheKey];
+    var sFoc   = fdCache[_cacheKey];
+    var getSBal   = function(bc){ return sBal[bc] !== undefined ? sBal[bc] : 0; };
+    var getSSales = function(bc){
+      if(sSales[bc] !== undefined) return sSales[bc];
+      return (s.count_items||[]).reduce(function(t,i){ return i.barcode===bc ? t+(parseFloat(i.sold_qty)||0) : t; },0);
+    };
+    var getSFoc = function(bc){ return sFoc[bc] !== undefined ? sFoc[bc] : 0; };
 
     // Aggregate counted items
     var aggMap = {};
@@ -2278,12 +2816,11 @@ async function buildAggData(){
         aggMap[key] = {
           barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
           product_name: i.product_name||prod.name||'', unit: i.unit||prod.unit||'ชิ้น',
-          quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0,
+          quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(prod.price)||0,
           balance: getSBal(i.barcode), uncounted: false
         };
       }
       aggMap[key].quantity += i.quantity;
-      aggMap[key].sold_qty += parseFloat(i.sold_qty)||0;
     });
     // เพิ่มสินค้าที่ยังไม่ได้นับ (ยอดจาก product_balances สาขา+วันที่)
     Object.values(prods).forEach(function(p){
@@ -2292,10 +2829,15 @@ async function buildAggData(){
         aggMap[key] = {
           barcode: p.barcode||'', product_code: p.product_code||'',
           product_name: p.name||'', unit: p.unit||'ชิ้น',
-          quantity: 0, sold_qty: 0, price: parseFloat(p.price)||0,
+          quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(p.price)||0,
           balance: getSBal(p.barcode), uncounted: true
         };
       }
+    });
+    // Apply sold_qty and foc_qty from DB (all items including uncounted)
+    Object.values(aggMap).forEach(function(a){
+      a.sold_qty = getSSales(a.barcode);
+      a.foc_qty  = getSFoc(a.barcode);
     });
     var aggItems = Object.values(aggMap);
     aggItems.sort(function(a,b){
@@ -2311,18 +2853,19 @@ async function exportCSV(){
   toast('⏳ กำลังเตรียมข้อมูล...');
   var agg = await buildAggData();
   if(!agg){ toast('⚠️ ไม่มีข้อมูล'); return; }
-  var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number (รหัสสินค้า)','ชื่อสินค้า','สถานะ','ยอดคงเหลือ','นับจริง','จำนวนขาย','ผลต่าง']];
+  var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number (รหัสสินค้า)','ชื่อสินค้า','สถานะ','ยอดคงเหลือ','นับจริง','จำนวนขาย','FOC','ผลต่าง']];
   agg.forEach(function(g){
     var s = g.session;
     g.items.forEach(function(i, idx){
-      var diff = i.uncounted ? '' : (i.quantity + (i.sold_qty||0)) - (i.balance||0);
+      var diff = i.uncounted ? '' : (i.quantity + (i.sold_qty||0) + (i.foc_qty||0)) - (i.balance||0);
       var status = i.uncounted ? 'ยังไม่นับ' : 'นับแล้ว';
-      rows.push([s.branch, s.count_date, s.counter_name, idx+1, i.barcode, i.product_code, i.product_name, status, i.balance||0, i.quantity, i.sold_qty||0, diff]);
+      rows.push([s.branch, s.count_date, s.counter_name, idx+1, i.barcode, i.product_code, i.product_name, status, i.balance||0, i.quantity, i.sold_qty||0, i.foc_qty||0, diff]);
     });
     var gBal = g.items.reduce(function(a,i){ return a+(i.balance||0); },0);
     var gQty = g.items.filter(function(i){return !i.uncounted;}).reduce(function(a,i){ return a+i.quantity; },0);
     var gSold = g.items.filter(function(i){return !i.uncounted;}).reduce(function(a,i){ return a+(i.sold_qty||0); },0);
-    rows.push([s.branch, s.count_date, s.counter_name, '', '', 'รวมทั้งหมด', '', '', gBal, gQty, gSold, gQty+gSold-gBal]);
+    var gFoc = g.items.filter(function(i){return !i.uncounted;}).reduce(function(a,i){ return a+(i.foc_qty||0); },0);
+    rows.push([s.branch, s.count_date, s.counter_name, '', '', 'รวมทั้งหมด', '', '', gBal, gQty, gSold, gFoc, gQty+gSold+gFoc-gBal]);
     rows.push([]);
   });
   var csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c||'').replace(/"/g,'""')+'"'; }).join(','); }).join('\r\n');
@@ -2344,7 +2887,7 @@ async function exportExcel(){
   var wb = XLSX.utils.book_new();
   var branch = document.getElementById('rpt-branch').value || 'ทุกสาขา';
   var date   = document.getElementById('rpt-date').value || new Date().toISOString().slice(0,10);
-  var COLS = 10; // total columns
+  var COLS = 11; // total columns (เพิ่ม FOC)
 
   agg.forEach(function(g, gi){
     var s = g.session;
@@ -2352,27 +2895,28 @@ async function exportExcel(){
     var wsData = [];
 
     // ── Title rows (merged across all cols) ──
-    wsData.push(['รายงานการตรวจนับสินค้า  Inventory Count Report','','','','','','','','','']);
+    wsData.push(['รายงานการตรวจนับสินค้า  Inventory Count Report','','','','','','','','','','']);
     // ── Meta row ──
-    wsData.push(['ห้าง/สาขา: '+esc(s.branch),'','','วันที่: '+thaiDate,'','','ผู้นับ: '+esc(s.counter_name),'','','']);
+    wsData.push(['ห้าง/สาขา: '+esc(s.branch),'','','วันที่: '+thaiDate,'','','ผู้นับ: '+esc(s.counter_name),'','','','']);
     wsData.push([]); // blank
 
-    // ── Column headers (10 cols) ──
+    // ── Column headers (11 cols) ──
     wsData.push([
       'ลำดับ','รหัสสินค้า','ชื่อสินค้า','สถานะ',
-      'คงเหลือ','นับจริง','จำนวนขาย','ผลต่าง',
+      'คงเหลือ','นับจริง','จำนวนขาย','FOC','ผลต่าง',
       'ราคา','ผลต่าง (บาท)'
     ]);
 
     // ── Data rows — filter out all-zero rows ──
     var displayItems = g.items.filter(function(i){
-      return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0);
+      return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0 && (i.foc_qty||0)===0);
     });
     var rowNum = 0;
     displayItems.forEach(function(i){
       rowNum++;
       var sold    = i.sold_qty||0;
-      var diff    = (i.quantity + sold) - (i.balance||0);
+      var foc     = i.foc_qty||0;
+      var diff    = (i.quantity + sold + foc) - (i.balance||0);
       var price   = parseFloat(i.price)||0;
       var monDiff = diff * price;
       var isOk    = (!i.uncounted && diff===0);
@@ -2385,6 +2929,7 @@ async function exportExcel(){
         i.balance||0,
         i.quantity,
         sold,
+        foc,
         diff,
         price||'',
         price ? monDiff : ''
@@ -2395,19 +2940,20 @@ async function exportExcel(){
     var gBal     = displayItems.reduce(function(a,i){ return a+(i.balance||0); },0);
     var gQty     = displayItems.reduce(function(a,i){ return a+i.quantity; },0);
     var gSold    = displayItems.reduce(function(a,i){ return a+(i.sold_qty||0); },0);
-    var gDiff    = gQty + gSold - gBal;
+    var gFoc     = displayItems.reduce(function(a,i){ return a+(i.foc_qty||0); },0);
+    var gDiff    = gQty + gSold + gFoc - gBal;
     var gMonDiff = displayItems.reduce(function(a,i){
-      var d=(i.quantity+(i.sold_qty||0))-(i.balance||0); return a+d*(parseFloat(i.price)||0);
+      var d=(i.quantity+(i.sold_qty||0)+(i.foc_qty||0))-(i.balance||0); return a+d*(parseFloat(i.price)||0);
     },0);
-    wsData.push(['','','','รวมทั้งหมด', gBal, gQty, gSold, gDiff, '', gMonDiff]);
+    wsData.push(['','','','รวมทั้งหมด', gBal, gQty, gSold, gFoc, gDiff, '', gMonDiff]);
     wsData.push([]); // blank
 
     // ── Signature rows (4 blocks) ──
-    wsData.push(['พนักงานขาย 1','','','พนักงานขาย 2','','','หัวหน้าเขต','','ผู้ตรวจสอบ','']);
-    wsData.push(['','','','','','','','','','']);
-    wsData.push(['','','','','','','','','','']);
-    wsData.push(['__________________','','','__________________','','','__________________','','__________________','']);
-    wsData.push(['พนักงานขาย 1','','','พนักงานขาย 2','','','หัวหน้าเขต','','ผู้ตรวจสอบ','']);
+    wsData.push(['พนักงานขาย 1','','','พนักงานขาย 2','','','หัวหน้าเขต','','ผู้ตรวจสอบ','','']);
+    wsData.push(['','','','','','','','','','','']);
+    wsData.push(['','','','','','','','','','','']);
+    wsData.push(['__________________','','','__________________','','','__________________','','__________________','','']);
+    wsData.push(['พนักงานขาย 1','','','พนักงานขาย 2','','','หัวหน้าเขต','','ผู้ตรวจสอบ','','']);
 
     var ws = XLSX.utils.aoa_to_sheet(wsData);
 
@@ -2420,6 +2966,7 @@ async function exportExcel(){
       {wch:11}, // คงเหลือ
       {wch:10}, // นับจริง
       {wch:11}, // จำนวนขาย
+      {wch:8},  // FOC
       {wch:10}, // ผลต่าง
       {wch:10}, // ราคา
       {wch:13}  // ผลต่าง(บาท)
@@ -2879,7 +3426,7 @@ function getCountedQty(bc){
   return counts.filter(function(c){ return c.barcode===bc; }).reduce(function(a,c){ return a+c.quantity; },0);
 }
 function getSoldQty(bc){
-  return counts.filter(function(c){ return c.barcode===bc; }).reduce(function(a,c){ return a+(c.sold_qty||0); },0);
+  return getSales(bc);
 }
 
 function searchProds(q){
@@ -3239,7 +3786,9 @@ function renderHistoryList(){
           (s.status==='in_progress' ? '<button class="btn btn-primary btn-sm" onclick="resumeSession('+i+')">▶️ นับต่อ</button>' : '')+
           '<button class="btn btn-success btn-sm" onclick="exportHistoryExcel('+i+')">📥 Export Excel</button>'+
           '<button class="btn btn-outline btn-sm" onclick="exportHistoryCSV('+i+')">⬇️ Export CSV</button>'+
+          '<button class="btn btn-sm" style="background:#6c3483;color:#fff" onclick="toggleAuditLog('+i+',\''+s.id+'\')">📋 Log</button>'+
         '</div>'+
+        '<div id="audit-log-'+i+'" style="display:none;margin-top:6px"></div>'+
         '<div id="hist-items-'+i+'" style="font-size:13px;color:#888">กดปุ่ม Export เพื่อดาวน์โหลด หรือรอโหลดข้อมูล...</div>'+
       '</div>'+
     '</div>';
@@ -3262,17 +3811,131 @@ async function loadHistoryItems(i){
     .select('*').eq('session_id', s.id);
   if(error){ el.textContent = '❌ '+error.message; return; }
   s._items = data || [];
-  var { data: hbd2 } = await supabase.from('product_balances')
-    .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
-  var hBal2 = {};
-  if(hbd2) hbd2.forEach(function(r){ hBal2[r.barcode] = parseFloat(r.balance)||0; });
-  var agg = buildAggFromItems(s._items, hBal2);
+  var [{ data: hbd2 }, { data: hsd2 }] = await Promise.all([
+    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date)
+  ]);
+  var hBal2 = {}; if(hbd2) hbd2.forEach(function(r){ hBal2[r.barcode] = parseFloat(r.balance)||0; });
+  var hSales2 = {}; if(hsd2) hsd2.forEach(function(r){ hSales2[r.barcode] = parseFloat(r.sold_qty)||0; });
+  var agg = buildAggFromItems(s._items, hBal2, hSales2);
   var totalQty = agg.reduce(function(a,r){ return a+r.quantity; },0);
   var totalDiff = agg.reduce(function(a,r){ return a + ((r.quantity+(r.sold_qty||0)) - (r.balance||0)); },0);
   el.textContent = 'SKU: '+agg.length+' รายการ | รวม: '+totalQty+' ชิ้น | ผลต่าง: '+(totalDiff>=0?'+':'')+totalDiff;
 }
 
-function buildAggFromItems(items, balMap){
+// ── Audit Trail (count_logs per session) ──────────────────
+var _auditOpen = {}; // i → true/false (toggle)
+
+async function toggleAuditLog(i, sessionId){
+  var el = document.getElementById('audit-log-'+i);
+  if(!el) return;
+  if(_auditOpen[i]){
+    _auditOpen[i] = false;
+    el.style.display = 'none';
+    return;
+  }
+  _auditOpen[i] = true;
+  el.style.display = 'block';
+  el.innerHTML = '<div style="font-size:13px;color:#888;padding:6px">กำลังโหลด log...</div>';
+  var { data, error } = await supabase.from('count_logs')
+    .select('id,barcode,delta_qty,counter_name,location,created_at')
+    .eq('session_id', sessionId)
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if(error){ el.innerHTML = '<div style="color:#e74c3c;font-size:13px;padding:6px">❌ '+esc(error.message)+'</div>'; return; }
+  var logs = data || [];
+  if(!logs.length){ el.innerHTML = '<div style="font-size:13px;color:#aaa;padding:6px">ไม่มี Log ใน session นี้</div>'; return; }
+
+  // Filter bar
+  var uniqueUsers = [];
+  logs.forEach(function(l){ if(l.counter_name && !uniqueUsers.includes(l.counter_name)) uniqueUsers.push(l.counter_name); });
+  var filterOpts = '<option value="">— ทุกคน —</option>'+uniqueUsers.map(function(u){ return '<option value="'+esc(u)+'">'+esc(u)+'</option>'; }).join('');
+
+  var tblId = 'audit-tbl-'+i;
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">'+
+      '<span style="font-size:12px;font-weight:700;color:#6c3483">📋 Audit Log</span>'+
+      '<span style="font-size:11px;color:#888">'+logs.length+' รายการ</span>'+
+      '<select id="audit-filter-'+i+'" onchange="filterAuditLog('+i+')" style="font-size:12px;border:1px solid #ddd;border-radius:6px;padding:2px 6px">'+filterOpts+'</select>'+
+      '<input id="audit-search-'+i+'" oninput="filterAuditLog('+i+')" placeholder="ค้นหา barcode / สินค้า" style="font-size:12px;border:1px solid #ddd;border-radius:6px;padding:2px 8px;flex:1;min-width:120px">'+
+      '<button onclick="exportAuditCSV('+i+')" style="font-size:11px;border:1px solid #6c3483;border-radius:6px;padding:2px 8px;background:#fff;color:#6c3483;cursor:pointer">⬇️ CSV</button>'+
+    '</div>'+
+    '<div style="overflow-x:auto">'+
+    '<table id="'+tblId+'" style="width:100%;border-collapse:collapse;font-size:12px">'+
+      '<thead><tr style="background:#f5f0ff;color:#6c3483;text-align:left">'+
+        '<th style="padding:5px 8px">เวลา</th>'+
+        '<th style="padding:5px 8px">ผู้นับ</th>'+
+        '<th style="padding:5px 8px">Barcode</th>'+
+        '<th style="padding:5px 8px">ชื่อสินค้า</th>'+
+        '<th style="padding:5px 8px;text-align:right">จำนวน</th>'+
+        '<th style="padding:5px 8px">ที่เก็บ</th>'+
+      '</tr></thead>'+
+      '<tbody id="audit-body-'+i+'"></tbody>'+
+    '</table></div>';
+
+  // เก็บ logs ไว้ใน closure เพื่อ filter
+  el._logs = logs;
+  filterAuditLog(i);
+}
+
+function filterAuditLog(i){
+  var el = document.getElementById('audit-log-'+i);
+  if(!el || !el._logs) return;
+  var filterUser = (document.getElementById('audit-filter-'+i)||{}).value || '';
+  var filterText = ((document.getElementById('audit-search-'+i)||{}).value || '').toLowerCase();
+  var logs = el._logs.filter(function(l){
+    if(filterUser && l.counter_name !== filterUser) return false;
+    if(filterText){
+      var bc = (l.barcode||'').toLowerCase();
+      var nm = ((prods[l.barcode] && prods[l.barcode].name)||'').toLowerCase();
+      if(!bc.includes(filterText) && !nm.includes(filterText)) return false;
+    }
+    return true;
+  });
+  var body = document.getElementById('audit-body-'+i);
+  if(!body) return;
+  body.innerHTML = logs.map(function(l){
+    var dt = l.created_at ? l.created_at.replace('T',' ').slice(0,19) : '—';
+    var prod = prods[l.barcode] || {};
+    var name = prod.name || '—';
+    var qty = parseInt(l.delta_qty)||0;
+    var qtyColor = qty > 0 ? '#27ae60' : '#e74c3c';
+    var qtyStr = (qty > 0 ? '+' : '') + qty;
+    return '<tr style="border-bottom:1px solid #f0f0f0">'+
+      '<td style="padding:4px 8px;color:#888;white-space:nowrap">'+esc(dt)+'</td>'+
+      '<td style="padding:4px 8px">'+esc(l.counter_name||'—')+'</td>'+
+      '<td style="padding:4px 8px;font-family:monospace">'+esc(l.barcode||'—')+'</td>'+
+      '<td style="padding:4px 8px">'+esc(name)+'</td>'+
+      '<td style="padding:4px 8px;text-align:right;font-weight:700;color:'+qtyColor+'">'+qtyStr+'</td>'+
+      '<td style="padding:4px 8px;color:#888">'+esc(l.location||'—')+'</td>'+
+    '</tr>';
+  }).join('') || '<tr><td colspan="6" style="text-align:center;color:#aaa;padding:12px">ไม่มีรายการที่ตรงกัน</td></tr>';
+}
+
+function exportAuditCSV(i){
+  var el = document.getElementById('audit-log-'+i);
+  if(!el || !el._logs) return;
+  var header = ['เวลา','ผู้นับ','Barcode','ชื่อสินค้า','จำนวน','ที่เก็บ'];
+  var rows = el._logs.map(function(l){
+    var prod = prods[l.barcode] || {};
+    return [
+      (l.created_at||'').replace('T',' ').slice(0,19),
+      l.counter_name||'',
+      l.barcode||'',
+      prod.name||'',
+      parseInt(l.delta_qty)||0,
+      l.location||''
+    ];
+  });
+  var csv = [header].concat(rows).map(function(r){ return r.map(function(v){ return '"'+String(v).replace(/"/g,'""')+'"'; }).join(','); }).join('\n');
+  var blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'audit_log_'+i+'.csv';
+  a.click();
+}
+
+function buildAggFromItems(items, balMap, salesMap, focMap){
   var aggMap = {};
   (items||[]).forEach(function(i){
     var key = i.barcode || i.product_name || '?';
@@ -3281,10 +3944,21 @@ function buildAggFromItems(items, balMap){
       var bal = (balMap && balMap[i.barcode] !== undefined) ? balMap[i.barcode] : parseFloat(prod.balance)||0;
       aggMap[key] = { barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
         product_name: i.product_name||'', unit: i.unit||prod.unit||'ชิ้น',
-        quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0, balance: bal };
+        quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(prod.price)||0, balance: bal };
     }
     aggMap[key].quantity += i.quantity;
-    aggMap[key].sold_qty += parseFloat(i.sold_qty)||0;
+  });
+  // Apply sold_qty: prefer product_sales (salesMap), fall back to count_items.sold_qty sum (backward compat)
+  Object.values(aggMap).forEach(function(a){
+    if(salesMap && salesMap[a.barcode] !== undefined){
+      a.sold_qty = salesMap[a.barcode];
+    } else {
+      var t = 0;
+      (items||[]).forEach(function(i){ if(i.barcode === a.barcode) t += parseFloat(i.sold_qty)||0; });
+      a.sold_qty = t;
+    }
+    // Apply foc_qty from product_foc
+    a.foc_qty = (focMap && focMap[a.barcode] !== undefined) ? focMap[a.barcode] : 0;
   });
   var aggItems = Object.values(aggMap);
   aggItems.sort(function(a,b){ return (a.product_code||'').localeCompare(b.product_code||''); });
@@ -3299,11 +3973,15 @@ async function exportHistoryExcel(i){
     if(error){ toast('❌ '+error.message); return; }
     s._items = data || [];
   }
-  var { data: hbd } = await supabase.from('product_balances')
-    .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
-  var hBalMap = {};
-  if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
-  buildAndDownloadExcel(s, s._items, hBalMap);
+  var [{ data: hbd }, { data: hsd }, { data: hfd }] = await Promise.all([
+    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
+    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+  ]);
+  var hBalMap = {}; if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
+  var hSalesMap = {}; if(hsd) hsd.forEach(function(r){ hSalesMap[r.barcode] = parseFloat(r.sold_qty)||0; });
+  var hFocMap = {}; if(hfd) hfd.forEach(function(r){ hFocMap[r.barcode] = parseFloat(r.foc_qty)||0; });
+  buildAndDownloadExcel(s, s._items, hBalMap, hSalesMap, hFocMap);
 }
 
 async function exportHistoryCSV(i){
@@ -3314,45 +3992,50 @@ async function exportHistoryCSV(i){
     if(error){ toast('❌ '+error.message); return; }
     s._items = data || [];
   }
-  var { data: hbd } = await supabase.from('product_balances')
-    .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
-  var hBalMap = {};
-  if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
-  buildAndDownloadCSV(s, s._items, hBalMap);
+  var [{ data: hbd }, { data: hsd }, { data: hfd }] = await Promise.all([
+    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
+    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+  ]);
+  var hBalMap = {}; if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
+  var hSalesMap = {}; if(hsd) hsd.forEach(function(r){ hSalesMap[r.barcode] = parseFloat(r.sold_qty)||0; });
+  var hFocMap = {}; if(hfd) hfd.forEach(function(r){ hFocMap[r.barcode] = parseFloat(r.foc_qty)||0; });
+  buildAndDownloadCSV(s, s._items, hBalMap, hSalesMap, hFocMap);
 }
 
-function buildAndDownloadExcel(s, items, balMap){
+function buildAndDownloadExcel(s, items, balMap, salesMap, focMap){
   if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
-  var agg = buildAggFromItems(items, balMap);
+  var agg = buildAggFromItems(items, balMap, salesMap, focMap);
   var thaiDate = (s.count_date||'').split('-').reverse().join('/');
   var wsData = [];
-  wsData.push(['ใบรายงานการตรวจนับสินค้า : Brand NCH','','','','','','','']);
-  wsData.push(['Inventory Check List Report','','','','','','','']);
-  wsData.push(['ห้าง/Department:',s.branch,'','สาขา/Branch:',s.branch,'','วันที่/Date:',thaiDate]);
-  wsData.push(['ผู้นับ:',s.counter_name,'','','','','','']);
+  wsData.push(['ใบรายงานการตรวจนับสินค้า : Brand NCH','','','','','','','','']);
+  wsData.push(['Inventory Check List Report','','','','','','','','']);
+  wsData.push(['ห้าง/Department:',s.branch,'','สาขา/Branch:',s.branch,'','วันที่/Date:',thaiDate,'']);
+  wsData.push(['ผู้นับ:',s.counter_name,'','','','','','','']);
   wsData.push([]);
-  wsData.push(['ลำดับ','Barcode','Item Number\nรหัสสินค้า','ชื่อสินค้า','ยอดคงเหลือ\nBalance','นับจริง\nCount','จำนวนขาย\nSold','ผลต่าง\nDifference']);
+  wsData.push(['ลำดับ','Barcode','Item Number\nรหัสสินค้า','ชื่อสินค้า','ยอดคงเหลือ\nBalance','นับจริง\nCount','จำนวนขาย\nSold','FOC\nFree','ผลต่าง\nDifference']);
   agg.forEach(function(r, idx){
-    var diff = (r.quantity + (r.sold_qty||0)) - (r.balance||0);
-    wsData.push([idx+1, r.barcode, r.product_code, r.product_name, r.balance||0, r.quantity, r.sold_qty||0, diff]);
+    var diff = (r.quantity + (r.sold_qty||0) + (r.foc_qty||0)) - (r.balance||0);
+    wsData.push([idx+1, r.barcode, r.product_code, r.product_name, r.balance||0, r.quantity, r.sold_qty||0, r.foc_qty||0, diff]);
   });
   var gBal = agg.reduce(function(a,r){ return a+(r.balance||0); },0);
   var gQty = agg.reduce(function(a,r){ return a+r.quantity; },0);
   var gSold = agg.reduce(function(a,r){ return a+(r.sold_qty||0); },0);
-  wsData.push(['','','','รวมทั้งหมด',gBal,gQty,gSold,gQty+gSold-gBal]);
+  var gFoc = agg.reduce(function(a,r){ return a+(r.foc_qty||0); },0);
+  wsData.push(['','','','รวมทั้งหมด',gBal,gQty,gSold,gFoc,gQty+gSold+gFoc-gBal]);
   wsData.push([]);
-  wsData.push(['ลายเซ็น ผู้ตรวจนับ','','','','ลายเซ็น พนักงานขาย','','','']);
-  wsData.push(['','','','','','','','']);
-  wsData.push(['__________________________','','','','__________________________','','','']);
-  wsData.push(['หัวหน้าเขต / Area Manager','','','','พนักงานขาย / Sales','','','']);
+  wsData.push(['ลายเซ็น ผู้ตรวจนับ','','','','ลายเซ็น พนักงานขาย','','','','']);
+  wsData.push(['','','','','','','','','']);
+  wsData.push(['__________________________','','','','__________________________','','','','']);
+  wsData.push(['หัวหน้าเขต / Area Manager','','','','พนักงานขาย / Sales','','','','']);
   wsData.push([]);
-  wsData.push(['ลายเซ็น ผู้รับผิดชอบ Loss Stock','','','','ลายเซ็น ผู้ตรวจสอบ บัญชีสต็อค','','','']);
-  wsData.push(['','','','','','','','']);
-  wsData.push(['__________________________','','','','__________________________','','','']);
-  wsData.push(['Loss Stock','','','','Stock Auditor / หัวหน้าแผนกบัญชี','','','']);
+  wsData.push(['ลายเซ็น ผู้รับผิดชอบ Loss Stock','','','','ลายเซ็น ผู้ตรวจสอบ บัญชีสต็อค','','','','']);
+  wsData.push(['','','','','','','','','']);
+  wsData.push(['__________________________','','','','__________________________','','','','']);
+  wsData.push(['Loss Stock','','','','Stock Auditor / หัวหน้าแผนกบัญชี','','','','']);
   var ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws['!cols'] = [{wch:6},{wch:16},{wch:16},{wch:30},{wch:14},{wch:14},{wch:12}];
-  ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:1,c:0},e:{r:1,c:7}}];
+  ws['!cols'] = [{wch:6},{wch:16},{wch:16},{wch:30},{wch:14},{wch:14},{wch:12},{wch:8},{wch:14}];
+  ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:8}},{s:{r:1,c:0},e:{r:1,c:8}}];
   var wb = XLSX.utils.book_new();
   var sheetName = (s.branch||'Sheet').replace(/สาขา /,'').slice(0,20);
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
@@ -3361,12 +4044,12 @@ function buildAndDownloadExcel(s, items, balMap){
   toast('📥 ดาวน์โหลด: '+filename);
 }
 
-function buildAndDownloadCSV(s, items, balMap){
-  var agg = buildAggFromItems(items, balMap);
-  var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number','ชื่อสินค้า','ยอดคงเหลือ','นับจริง','จำนวนขาย','ผลต่าง']];
+function buildAndDownloadCSV(s, items, balMap, salesMap, focMap){
+  var agg = buildAggFromItems(items, balMap, salesMap, focMap);
+  var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number','ชื่อสินค้า','ยอดคงเหลือ','นับจริง','จำนวนขาย','FOC','ผลต่าง']];
   agg.forEach(function(r, idx){
-    var diff = (r.quantity + (r.sold_qty||0)) - (r.balance||0);
-    rows.push([s.branch, s.count_date, s.counter_name, idx+1, r.barcode, r.product_code, r.product_name, r.balance||0, r.quantity, r.sold_qty||0, diff]);
+    var diff = (r.quantity + (r.sold_qty||0) + (r.foc_qty||0)) - (r.balance||0);
+    rows.push([s.branch, s.count_date, s.counter_name, idx+1, r.barcode, r.product_code, r.product_name, r.balance||0, r.quantity, r.sold_qty||0, r.foc_qty||0, diff]);
   });
   var csv = rows.map(function(r){ return r.map(function(c){ return '"'+String(c||'').replace(/"/g,'""')+'"'; }).join(','); }).join('\r\n');
   var blob = new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8'});
@@ -3387,7 +4070,11 @@ async function resumeSession(i){
   currentSession = s;
   counts = data || [];
   localStorage.setItem('nch_session_id', s.id);
-  await loadBranchBalance(s.branch, s.count_date);
+  await Promise.all([
+    loadBranchBalance(s.branch, s.count_date),
+    loadSalesBalance(s.branch, s.count_date),
+    loadFocBalance(s.branch, s.count_date)
+  ]);
   // Bug 3: เริ่ม realtime sync
   subscribeCountItems(s.id);
   updateSessionUI();
@@ -3497,11 +4184,12 @@ async function printStockReport(){
     var thaiDate = (s.count_date||'').split('-').reverse().join('/');
     var rowNum2 = 0;
     var rows = g.items.filter(function(i){
-      return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0);
+      return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0 && (i.foc_qty||0)===0);
     }).map(function(i){
       rowNum2++;
       var sold   = i.sold_qty||0;
-      var diff   = (i.quantity + sold) - (i.balance||0);
+      var foc    = i.foc_qty||0;
+      var diff   = (i.quantity + sold + foc) - (i.balance||0);
       var price  = parseFloat(i.price)||0;
       var monDiff= diff*price;
       var isOk   = (!i.uncounted && diff===0);
@@ -3513,6 +4201,7 @@ async function printStockReport(){
         '<td class="num">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
         '<td class="num">'+i.quantity.toLocaleString()+'</td>'+
         '<td class="num">'+(sold?sold.toLocaleString():'—')+'</td>'+
+        '<td class="num">'+(foc?foc.toLocaleString():'—')+'</td>'+
         '<td class="num" style="'+(diff<0?'color:#cc0000':diff>0?'color:#1a6b3a':'')+'">'+(diff>=0?'+':'')+diff+'</td>'+
         '<td class="num">'+(price?price.toLocaleString():'—')+'</td>'+
         '<td class="num" style="'+(monDiff<0?'color:#cc0000':monDiff>0?'color:#1a6b3a':'font-weight:normal')+'">'+(price?(monDiff>=0?'+':'')+monDiff.toLocaleString():'—')+'</td>'+
@@ -3521,7 +4210,8 @@ async function printStockReport(){
     var gBal=g.items.reduce(function(a,r){return a+(r.balance||0);},0);
     var gQty=g.items.reduce(function(a,r){return a+r.quantity;},0);
     var gSold=g.items.reduce(function(a,r){return a+(r.sold_qty||0);},0);
-    var gMon = g.items.reduce(function(a,r){var d=(r.quantity+(r.sold_qty||0))-(r.balance||0);return a+d*(parseFloat(r.price)||0);},0);
+    var gFoc2=g.items.reduce(function(a,r){return a+(r.foc_qty||0);},0);
+    var gMon = g.items.reduce(function(a,r){var d=(r.quantity+(r.sold_qty||0)+(r.foc_qty||0))-(r.balance||0);return a+d*(parseFloat(r.price)||0);},0);
     return '<div class="print-header"><img class="print-logo" src="'+_LOGO_URI+'" alt="NutCandy Logo">'+
       '<div class="print-title-block"><div class="print-title">รายงานการตรวจนับสินค้า</div><div class="print-sub">Inventory Count Report</div></div></div>'+
       '<div class="print-meta">'+
@@ -3537,6 +4227,7 @@ async function printStockReport(){
         '<th class="num" style="width:60px">คงเหลือ</th>'+
         '<th class="num" style="width:55px">นับจริง</th>'+
         '<th class="num" style="width:60px">จำนวนขาย</th>'+
+        '<th class="num" style="width:50px">FOC</th>'+
         '<th class="num" style="width:55px">ผลต่าง</th>'+
         '<th class="num" style="width:55px">ราคา</th>'+
         '<th class="num" style="width:70px">ผลต่าง (บาท)</th>'+
@@ -3545,7 +4236,8 @@ async function printStockReport(){
         '<td colspan="4" style="text-align:right">รวม</td>'+
         '<td class="num"><b>'+gBal+'</b></td><td class="num"><b>'+gQty+'</b></td>'+
         '<td class="num"><b>'+gSold+'</b></td>'+
-        '<td class="num"><b>'+(gQty+gSold-gBal)+'</b></td>'+
+        '<td class="num"><b>'+gFoc2+'</b></td>'+
+        '<td class="num"><b>'+(gQty+gSold+gFoc2-gBal)+'</b></td>'+
         '<td class="num">—</td><td class="num"><b>'+(gMon>=0?'+':'')+gMon.toLocaleString()+'</b></td>'+
       '</tr></tfoot></table>'+
       '<div class="print-sign">'+
@@ -3570,14 +4262,26 @@ async function printSession(sessionId){
   var thaiDate = (s.count_date||'').split('-').reverse().join('/');
   var totalProds = Object.keys(prods).length;
 
-  // Load branch-specific balance for this session's branch + date
-  var psBal = {};
+  // Load branch-specific balance + sales + foc for this session's branch + date
+  var psBal = {}, psSales = {}, psFoc = {};
   if(s.branch && s.count_date){
-    var { data: psData } = await supabase.from('product_balances')
-      .select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date);
+    var [{ data: psData }, { data: psSalesData }, { data: psFocData }] = await Promise.all([
+      supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
+      supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
+      supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+    ]);
     if(psData) psData.forEach(function(r){ psBal[r.barcode] = parseFloat(r.balance)||0; });
+    if(psSalesData) psSalesData.forEach(function(r){ psSales[r.barcode] = parseFloat(r.sold_qty)||0; });
+    if(psFocData) psFocData.forEach(function(r){ psFoc[r.barcode] = parseFloat(r.foc_qty)||0; });
   }
-  var getPsBal = function(bc){ return psBal[bc] !== undefined ? psBal[bc] : 0; };
+  var getPsBal   = function(bc){ return psBal[bc] !== undefined ? psBal[bc] : 0; };
+  var getPsSales = function(bc){
+    if(psSales[bc] !== undefined) return psSales[bc];
+    // backward compat: sum from count_items rows
+    return (items||[]).reduce(function(t,i){ return i.barcode===bc ? t+(parseFloat(i.sold_qty)||0) : t; }, 0);
+  };
+
+  var getPsFoc = function(bc){ return psFoc[bc] !== undefined ? psFoc[bc] : 0; };
 
   // Build aggMap — counted + uncounted (same logic as loadReport)
   var aggMap = {};
@@ -3588,12 +4292,11 @@ async function printSession(sessionId){
       aggMap[key] = {
         barcode: i.barcode||'', product_code: i.product_code||prod.product_code||'',
         product_name: i.product_name||prod.name||'', unit: i.unit||prod.unit||'ชิ้น',
-        quantity: 0, sold_qty: 0, price: parseFloat(prod.price)||0,
+        quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(prod.price)||0,
         balance: getPsBal(i.barcode), uncounted: false
       };
     }
     aggMap[key].quantity += i.quantity;
-    aggMap[key].sold_qty += parseFloat(i.sold_qty)||0;
   });
   Object.values(prods).forEach(function(p){
     var key = p.barcode;
@@ -3601,10 +4304,15 @@ async function printSession(sessionId){
       aggMap[key] = {
         barcode: p.barcode||'', product_code: p.product_code||'',
         product_name: p.name||'', unit: p.unit||'ชิ้น',
-        quantity: 0, sold_qty: 0, price: parseFloat(p.price)||0,
+        quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(p.price)||0,
         balance: getPsBal(p.barcode), uncounted: true
       };
     }
+  });
+  // Apply sold_qty and foc_qty from DB (all items including uncounted)
+  Object.values(aggMap).forEach(function(a){
+    a.sold_qty = getPsSales(a.barcode);
+    a.foc_qty  = getPsFoc(a.barcode);
   });
   var aggItems = Object.values(aggMap);
   aggItems.sort(function(a,b){
@@ -3616,15 +4324,16 @@ async function printSession(sessionId){
   var grandQty  = countedItems.reduce(function(a,i){ return a+i.quantity; },0);
   var pct = totalProds ? Math.round(countedItems.length/totalProds*100) : 0;
 
-  // Filter: skip rows where balance=0, quantity=0, sold_qty=0 (all zero = no data)
+  // Filter: skip rows where balance=0, quantity=0, sold_qty=0, foc_qty=0 (all zero = no data)
   var displayItems = aggItems.filter(function(i){
-    return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0);
+    return !((i.balance||0)===0 && i.quantity===0 && (i.sold_qty||0)===0 && (i.foc_qty||0)===0);
   });
   var rowNum = 0;
   var rows = displayItems.map(function(i){
     rowNum++;
     var sold   = i.sold_qty||0;
-    var diff   = (i.quantity + sold) - (i.balance||0);
+    var foc    = i.foc_qty||0;
+    var diff   = (i.quantity + sold + foc) - (i.balance||0);
     var price  = parseFloat(i.price)||0;
     var monDiff= diff * price;
     var isOk   = (!i.uncounted && diff===0);
@@ -3640,6 +4349,7 @@ async function printSession(sessionId){
       '<td class="num">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
       '<td class="num">'+i.quantity.toLocaleString()+'</td>'+
       '<td class="num">'+(sold?sold.toLocaleString():'—')+'</td>'+
+      '<td class="num">'+(foc?foc.toLocaleString():'—')+'</td>'+
       '<td class="num" style="'+(diff<0?'color:#cc0000':diff>0?'color:#1a6b3a':'')+'">'+diffTxt+'</td>'+
       '<td class="num">'+( price ? price.toLocaleString() : '—' )+'</td>'+
       '<td class="num" style="'+(monDiff<0?'color:#cc0000':monDiff>0?'color:#1a6b3a':'font-weight:normal')+'">'+( price ? monTxt : '—' )+'</td>'+
@@ -3649,9 +4359,10 @@ async function printSession(sessionId){
   var gBal     = displayItems.reduce(function(a,r){ return a+(r.balance||0); },0);
   var gQty     = displayItems.reduce(function(a,r){ return a+r.quantity; },0);
   var gSold    = displayItems.reduce(function(a,r){ return a+(r.sold_qty||0); },0);
-  var gDiff    = gQty + gSold - gBal;
+  var gFoc     = displayItems.reduce(function(a,r){ return a+(r.foc_qty||0); },0);
+  var gDiff    = gQty + gSold + gFoc - gBal;
   var gMonDiff = displayItems.reduce(function(a,r){
-    var d=(r.quantity+(r.sold_qty||0))-(r.balance||0); return a+d*(parseFloat(r.price)||0);
+    var d=(r.quantity+(r.sold_qty||0)+(r.foc_qty||0))-(r.balance||0); return a+d*(parseFloat(r.price)||0);
   },0);
 
   var html =
@@ -3680,6 +4391,7 @@ async function printSession(sessionId){
         '<th class="num" style="width:60px">คงเหลือ</th>'+
         '<th class="num" style="width:55px">นับจริง</th>'+
         '<th class="num" style="width:60px">จำนวนขาย</th>'+
+        '<th class="num" style="width:50px">FOC</th>'+
         '<th class="num" style="width:55px">ผลต่าง</th>'+
         '<th class="num" style="width:55px">ราคา</th>'+
         '<th class="num" style="width:70px">ผลต่าง (บาท)</th>'+
@@ -3690,6 +4402,7 @@ async function printSession(sessionId){
         '<td class="num">'+gBal.toLocaleString()+'</td>'+
         '<td class="num">'+gQty.toLocaleString()+'</td>'+
         '<td class="num">'+gSold.toLocaleString()+'</td>'+
+        '<td class="num">'+gFoc.toLocaleString()+'</td>'+
         '<td class="num" style="'+(gDiff<0?'color:#cc0000':gDiff>0?'color:#1a6b3a':'')+'">'+(gDiff>=0?'+':'')+gDiff.toLocaleString()+'</td>'+
         '<td class="num">—</td>'+
         '<td class="num" style="'+(gMonDiff<0?'color:#cc0000':gMonDiff>0?'color:#1a6b3a':'')+'">'+(gMonDiff>=0?'+':'')+gMonDiff.toLocaleString()+'</td>'+
