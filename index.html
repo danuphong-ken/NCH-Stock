@@ -329,7 +329,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
                 <input type="number" id="qty-input" value="1" min="0" style="width:100%;padding:10px;border:2px solid #6c3483;border-radius:8px;font-size:22px;font-weight:700;text-align:center;outline:none">
               </div>
               <div style="flex:1;text-align:center">
-                <label style="font-size:12px;color:#e67e22;display:block;margin-bottom:4px">จำนวนขาย (ก่อนนับ)</label>
+                <label style="font-size:12px;color:#e67e22;display:block;margin-bottom:4px">จำนวนขาย (+ เพิ่มเข้า)</label>
                 <input type="number" id="sold-input" value="0" min="0" style="width:100%;padding:10px;border:2px solid #e67e22;border-radius:8px;font-size:22px;font-weight:700;text-align:center;outline:none;color:#e67e22">
               </div>
             </div>
@@ -804,6 +804,25 @@ async function saveSalesBalance(branch, soldMap, date){
   }
   return null;
 }
+
+// เพิ่มยอดขายแบบ delta ลง product_sales (single source of truth ของยอดขาย)
+// ใช้กับช่อง "จำนวนขาย" บนการ์ดสแกน — ช่องนี้ reset เป็น 0 ทุกครั้งที่เลือกสินค้า
+// ค่าที่กรอกจึงเป็นยอด "เพิ่มเข้ามา" ไม่ใช่ยอดสะสม
+async function addSalesDelta(branch, date, bc, delta){
+  delta = parseFloat(delta) || 0;
+  if(!branch || !date || !bc || !delta) return null;
+  var { data: exist } = await supabase.from('product_sales')
+    .select('sold_qty').eq('branch', branch).eq('sale_date', date).eq('barcode', bc).maybeSingle();
+  var total = (exist ? (parseFloat(exist.sold_qty)||0) : 0) + delta;
+  var m = {}; m[bc] = total;
+  var err = await saveSalesBalance(branch, m, date);
+  if(err) return null;
+  // sync in-memory ถ้าเป็นสาขา+วันที่ของ session ปัจจุบัน
+  if(currentSession && currentSession.branch === branch && currentSession.count_date === date){
+    salesBal[bc] = total;
+  }
+  return total;
+}
 // ═══════════════════════════════════════
 //  FOC Balance (product_foc table)
 //  คล้าย salesBal แต่เก็บสินค้า FOC (แจกฟรี) ต่อสาขา+วันที่
@@ -1030,10 +1049,14 @@ async function flushOfflineQueue(){
           p_session_id: op.sessionId,
           p_barcode:    op.bc,
           p_delta:      op.qty,
-          p_sold_delta: op.soldQty || 0,
+          p_sold_delta: 0,
           p_counter:    op.counterName || null
         });
         if(!re){
+          // ยอดขายที่ค้างอยู่ → บวกเข้า product_sales (source of truth)
+          if(op.soldQty && op.branch && op.date){
+            await addSalesDelta(op.branch, op.date, op.bc, op.soldQty);
+          }
           await _removeOfflineItem(op.id);
           flushed++;
           // sync local counts[] ถ้า session ยังอยู่
@@ -1437,32 +1460,59 @@ async function addCount(bc, qty, soldQty, counterName, location){
     return edData;
   }
 
-  // โหมดนับซ่อม → scan ครั้งแรกของ barcode: reset logs เป็น 0 ก่อน แล้ว accumulate
+  // โหมดนับซ่อม → scan ครั้งแรกของ barcode: SET absolute value, scan ถัดไป accumulate
   if(_recountMode){
     setSyncDot('syncing');
     var isFirstRc = !_recountInitialized[bc];
+    var rcCtr = counterName ? counterName+' [ซ่อม]' : null;
+
     if(isFirstRc){
-      // ครั้งแรก: ลบ logs เก่าทั้งหมดของ barcode นี้ แล้ว reset count_items → 0
       _recountInitialized[bc] = true;
+      // ลบ logs เก่าของ barcode นี้ออก
       await supabase.from('count_logs').delete()
         .eq('session_id', currentSession.id).eq('barcode', bc);
-      // Reset count_items quantity = 0 ใน local และ DB (ถ้า row มีอยู่)
-      var rcResetIdx = counts.findIndex(function(c){ return c.barcode === bc; });
-      if(rcResetIdx > -1){
-        counts[rcResetIdx] = Object.assign({}, counts[rcResetIdx], { quantity: 0 });
-        await supabase.from('count_items')
-          .update({ quantity: 0 })
-          .eq('session_id', currentSession.id).eq('barcode', bc);
+
+      // ── แก้บั๊ก accumulation: ใช้ direct UPDATE (absolute) แทน reset+RPC ──
+      // วิธีเดิม (reset → RPC increment) มีโอกาสบวกทับค่าเดิมถ้า reset ไม่ถึง DB ก่อน RPC
+      var rcLocalIdx = counts.findIndex(function(c){ return c.barcode === bc; });
+      if(rcLocalIdx > -1){
+        // Row มีอยู่แล้ว → SET ค่าตรง ๆ เลย (quantity = qty ไม่ใช่ quantity + qty)
+        // ไม่แตะ sold_qty — ยอดขายอยู่ที่ product_sales การนับซ่อมแก้แค่จำนวนนับ
+        var { data: rcSetRow, error: rcSetErr } = await supabase.from('count_items')
+          .update({ quantity: qty, counter_name: rcCtr })
+          .eq('session_id', currentSession.id).eq('barcode', bc)
+          .select().maybeSingle();
+        setSyncDot(rcSetErr ? 'off' : 'on');
+        if(rcSetErr){ toast('❌ บันทึกไม่ได้: '+rcSetErr.message); return; }
+        if(rcSetRow){
+          counts[rcLocalIdx] = rcSetRow;
+          if(soldQty) await addSalesDelta(currentSession.branch, currentSession.count_date, bc, soldQty);
+          _selfWriting[bc] = rcSetRow.quantity;
+          clearTimeout(_selfWriting['_t_'+bc]);
+          _selfWriting['_t_'+bc] = setTimeout(function(){ delete _selfWriting[bc]; delete _selfWriting['_t_'+bc]; }, 5000);
+          renderCounts(); updateSelCounted(bc);
+          insertCountLog(bc, qty, counterName, location);
+          reportAutoRefresh();
+          toast('🔄 ซ่อม: '+qty+' ชิ้น (ตั้งใหม่) × '+(p?p.name:bc));
+          return rcSetRow;
+        }
       }
+      // Row ไม่มีใน local → ต้อง INSERT ผ่าน RPC (RPC จะ insert quantity=qty)
+      // reset local เป็น 0 ก่อนให้ RPC บวก qty บน 0 = qty ถูกต้อง
+      var rcResetFallIdx = counts.findIndex(function(c){ return c.barcode === bc; });
+      if(rcResetFallIdx > -1) counts[rcResetFallIdx] = Object.assign({}, counts[rcResetFallIdx], { quantity: 0 });
+      await supabase.from('count_items')
+        .update({ quantity: 0 }).eq('session_id', currentSession.id).eq('barcode', bc);
     }
 
-    // Accumulate ด้วย RPC เหมือน normal mode (บวกสะสมจาก reset 0)
+    // ครั้งที่ 2+ ของ barcode เดียวกัน: บวกสะสมปกติผ่าน RPC
+    // p_sold_delta = 0 — ยอดขายเขียนแยกลง product_sales ด้านล่าง (กันบวกซ้ำ)
     var { data: rpcRows2, error: rpcErr2 } = await supabase.rpc('increment_count_qty', {
       p_session_id: currentSession.id,
       p_barcode:    bc,
       p_delta:      qty,
-      p_sold_delta: soldQty,
-      p_counter:    counterName ? counterName+' [ซ่อม]' : null
+      p_sold_delta: 0,
+      p_counter:    rcCtr
     });
     setSyncDot(rpcErr2 ? 'off' : 'on');
     if(rpcErr2){ toast('❌ บันทึกไม่ได้: '+rpcErr2.message); return; }
@@ -1470,6 +1520,7 @@ async function addCount(bc, qty, soldQty, counterName, location){
     if(!rcRow){ toast('❌ ไม่ได้รับข้อมูลกลับจาก DB'); return; }
     var rcIdx = counts.findIndex(function(c){ return c.barcode === bc; });
     if(rcIdx > -1) counts[rcIdx] = rcRow; else counts.unshift(rcRow);
+    if(soldQty) await addSalesDelta(currentSession.branch, currentSession.count_date, bc, soldQty);
     _selfWriting[bc] = rcRow.quantity;
     clearTimeout(_selfWriting['_t_'+bc]);
     _selfWriting['_t_'+bc] = setTimeout(function(){ delete _selfWriting[bc]; delete _selfWriting['_t_'+bc]; }, 5000);
@@ -1490,18 +1541,19 @@ async function addCount(bc, qty, soldQty, counterName, location){
     offRow.quantity = offBase + qty;
     if(offIdx > -1) counts[offIdx] = offRow; else counts.unshift(offRow);
     renderCounts(); updateSelCounted(bc);
-    await pushOfflineQueue({ type:'addCount', sessionId: currentSession.id, bc: bc, qty: qty, soldQty: soldQty, counterName: counterName||null, location: location||null });
+    await pushOfflineQueue({ type:'addCount', sessionId: currentSession.id, branch: currentSession.branch, date: currentSession.count_date, bc: bc, qty: qty, soldQty: soldQty, counterName: counterName||null, location: location||null });
     toast('📴 ออฟไลน์ — บันทึกชั่วคราว '+qty+' ชิ้น × '+(p?p.name:bc));
     return;
   }
 
   // Normal mode → atomic upsert ผ่าน RPC แล้ว patch location แยก (RPC ไม่รับ location param)
   setSyncDot('syncing');
+  // p_sold_delta = 0 เสมอ — ยอดขายเก็บที่ product_sales ที่เดียว (เขียนแยกด้านล่าง)
   var { data: rpcRows, error: rpcErr } = await supabase.rpc('increment_count_qty', {
     p_session_id: currentSession.id,
     p_barcode:    bc,
     p_delta:      qty,
-    p_sold_delta: soldQty,
+    p_sold_delta: 0,
     p_counter:    counterName || null
   });
   // ตรวจว่าเป็น network error → queue แทน error
@@ -1513,7 +1565,7 @@ async function addCount(bc, qty, soldQty, counterName, location){
     offRow2.quantity = offBase2 + qty;
     if(offIdx2 > -1) counts[offIdx2] = offRow2; else counts.unshift(offRow2);
     renderCounts(); updateSelCounted(bc);
-    await pushOfflineQueue({ type:'addCount', sessionId: currentSession.id, bc: bc, qty: qty, soldQty: soldQty, counterName: counterName||null, location: location||null });
+    await pushOfflineQueue({ type:'addCount', sessionId: currentSession.id, branch: currentSession.branch, date: currentSession.count_date, bc: bc, qty: qty, soldQty: soldQty, counterName: counterName||null, location: location||null });
     toast('⚠️ เน็ตขัดข้อง — บันทึกชั่วคราว จะส่งใหม่อัตโนมัติ');
     return;
   }
@@ -1529,6 +1581,8 @@ async function addCount(bc, qty, soldQty, counterName, location){
   }
   var exIdx = counts.findIndex(function(c){ return c.barcode === bc; });
   if(exIdx > -1) counts[exIdx] = newRow; else counts.unshift(newRow);
+  // ยอดขายที่กรอกบนการ์ดสแกน → บวกเข้า product_sales (source of truth)
+  if(soldQty) await addSalesDelta(currentSession.branch, currentSession.count_date, bc, soldQty);
   // Guard: ป้องกัน Realtime event เก่า (out-of-order) เขียนทับค่าที่ RPC เพิ่งให้มา
   _selfWriting[bc] = newRow.quantity;
   clearTimeout(_selfWriting['_t_'+bc]);
@@ -2036,6 +2090,14 @@ async function clearSalesBalance(){
   var { error } = await supabase.from('product_sales').delete().eq('branch', branch).eq('sale_date', date);
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ ล้างไม่ได้: '+error.message); return; }
+  // ล้าง count_items.sold_qty (legacy) ของ session สาขา+วันที่นี้ด้วย
+  // ไม่งั้นรายงานจะ fallback ไปอ่านค่าเก่ากลับมา = ล้างไม่จริง
+  var { data: clrSess } = await supabase.from('count_sessions')
+    .select('id').eq('branch', branch).eq('count_date', date);
+  if(clrSess && clrSess.length){
+    await supabase.from('count_items').update({ sold_qty: 0 })
+      .in('session_id', clrSess.map(function(s){ return s.id; }));
+  }
   _clearSalesHistory(branch, date);
   updateSalesUploadHistory(branch, date);
   if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
@@ -3605,7 +3667,7 @@ function pickProd(bc){
   var bal = getBal(bc);
   var counted = getCountedQty(bc);
   var sold = getSoldQty(bc);
-  var diff = (counted + sold) - bal;
+  var diff = (counted + sold + getFoc(bc)) - bal;
   document.getElementById('sel-name').textContent = p.name;
   document.getElementById('sel-meta').textContent = 'รหัส: '+p.product_code+' | Barcode: '+bc;
   document.getElementById('sel-bal').textContent = bal;
@@ -3632,7 +3694,7 @@ function updateSelCounted(bc){
   var bal = getBal(bc);
   var counted = getCountedQty(bc);
   var sold = getSoldQty(bc);
-  var diff = (counted + sold) - bal;
+  var diff = (counted + sold + getFoc(bc)) - bal;
   document.getElementById('sel-counted').textContent = counted;
   var diffEl = document.getElementById('sel-diff');
   diffEl.textContent = (diff>=0?'+':'')+diff;
