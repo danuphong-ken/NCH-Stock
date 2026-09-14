@@ -645,19 +645,22 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
           คอลัมน์: <strong>รหัสสินค้า / Barcode</strong> และ <strong>จำนวนขาย</strong>
         </p>
         <div style="display:flex;gap:8px;margin-bottom:10px">
-          <select id="sales-import-branch" style="flex:2;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;background:#fff">
+          <select id="sales-import-branch" style="flex:2;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;background:#fff" onchange="refreshSalesHistory()">
             <option value="">— เลือกสาขา —</option>
           </select>
-          <input type="date" id="sales-import-date" style="flex:1;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px">
+          <input type="date" id="sales-import-date" style="flex:1;padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px" onchange="refreshSalesHistory()">
         </div>
         <p style="font-size:12px;color:#e67e22;margin-bottom:8px">⚠️ วันที่ต้องตรงกับวันที่ใน Session การนับ</p>
-        <div class="btn-row" style="margin-bottom:8px">
+        <div class="btn-row" style="margin-bottom:8px;flex-wrap:wrap;gap:6px">
           <label class="btn btn-success" style="cursor:pointer">
             📥 Excel ยอดขาย (.xlsx)
             <input type="file" accept=".xlsx,.xls" id="import-sales-xlsx" onchange="importSalesXLSX(this)" style="display:none">
           </label>
+          <button id="sales-force-upload-btn" class="btn" style="display:none;background:#e67e22;color:#fff" onclick="forceImportSales()">⚠️ อัพโหลดซ้ำ (ยืนยัน)</button>
+          <button class="btn" style="background:#e74c3c;color:#fff" onclick="clearSalesBalance()">🗑️ ล้างยอดขายทั้งหมด</button>
         </div>
         <div id="import-sales-status" style="font-size:13px;color:#27ae60;min-height:18px"></div>
+        <div id="sales-upload-history" style="margin-top:8px;font-size:12px;color:#888"></div>
       </div>
 
       <!-- ── อัปเดตสินค้า FOC ── -->
@@ -1748,6 +1751,8 @@ function salesAutoRefresh(){
 
 // อัปเดต _rptData ของ session ปัจจุบันจาก counts[] ทันที (ไม่ต้องรอ DB)
 function syncCurrentSessionToRptData(){
+  // ไม่ sync ขณะนับซ่อม — counts[] อาจมีรายการที่ยัง reset เป็น 0 ยังไม่สมบูรณ์
+  if(_recountMode) return;
   if(!window._rptData || !currentSession) return;
   var idx = window._rptData.findIndex(function(s){ return s.id === currentSession.id; });
   if(idx === -1) return;
@@ -1996,12 +2001,64 @@ async function exitRecountMode(){
 // ═══════════════════════════════════════
 //  Import Intraday Sales from Excel (Settings tab)
 // ═══════════════════════════════════════
-function importSalesXLSX(input){
+// ── Sales upload history helpers ─────────────────────────────────────
+function _salesLsKey(branch, date){ return 'sales_files_' + branch + '_' + date; }
+function _getSalesHistory(branch, date){
+  try { return JSON.parse(localStorage.getItem(_salesLsKey(branch, date)) || '[]'); } catch(e){ return []; }
+}
+function _addSalesHistory(branch, date, fileName, fp){
+  try {
+    var arr = _getSalesHistory(branch, date);
+    arr.push({ fp: fp, name: fileName, ts: new Date().toISOString() });
+    localStorage.setItem(_salesLsKey(branch, date), JSON.stringify(arr));
+  } catch(e){}
+}
+function _clearSalesHistory(branch, date){
+  try { localStorage.removeItem(_salesLsKey(branch, date)); } catch(e){}
+}
+function updateSalesUploadHistory(branch, date){
+  var el = document.getElementById('sales-upload-history'); if(!el) return;
+  var arr = _getSalesHistory(branch, date);
+  if(!arr.length){ el.innerHTML = ''; return; }
+  var html = '<div style="border-top:1px solid #ddd;padding-top:6px;margin-top:4px"><strong>ไฟล์ที่อัพโหลดแล้ว ('+branch+' / '+date+'):</strong><ul style="margin:4px 0 0 16px;padding:0">';
+  arr.forEach(function(u){
+    var t = u.ts ? new Date(u.ts).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}) : '';
+    html += '<li>'+u.name+(t?' — '+t:'')+'</li>';
+  });
+  html += '</ul></div>';
+  el.innerHTML = html;
+}
+async function clearSalesBalance(){
   var branch = document.getElementById('sales-import-branch').value;
   var date   = document.getElementById('sales-import-date').value;
-  if(!branch){ toast('⚠️ เลือกสาขาก่อนนำเข้าไฟล์'); input.value=''; return; }
-  if(!date)  { toast('⚠️ เลือกวันที่ให้ตรงกับ Session การนับ'); input.value=''; return; }
-  var file = input.files[0]; if(!file) return;
+  if(!branch||!date){ toast('⚠️ เลือกสาขาและวันที่ก่อน'); return; }
+  if(!confirm('ลบยอดขายทั้งหมดของสาขา "'+branch+'" วันที่ '+date+' ออกจาก DB?')) return;
+  var { error } = await supabase.from('product_sales').delete().eq('branch', branch).eq('sale_date', date);
+  setSyncDot(error ? 'off' : 'on');
+  if(error){ toast('❌ ล้างไม่ได้: '+error.message); return; }
+  _clearSalesHistory(branch, date);
+  updateSalesUploadHistory(branch, date);
+  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+    salesBal = {}; renderCounts(); renderSalesList();
+  }
+  document.getElementById('import-sales-status').textContent = '';
+  toast('🗑️ ล้างยอดขายสาขา "'+branch+'" วันที่ '+date+' แล้ว');
+}
+function refreshSalesHistory(){
+  var branch = document.getElementById('sales-import-branch').value;
+  var date   = document.getElementById('sales-import-date').value;
+  updateSalesUploadHistory(branch, date);
+  document.getElementById('import-sales-status').textContent = '';
+  document.getElementById('sales-force-upload-btn').style.display = 'none';
+  window._pendingSalesFile = null;
+}
+function forceImportSales(){
+  var p = window._pendingSalesFile; if(!p) return;
+  document.getElementById('sales-force-upload-btn').style.display = 'none';
+  window._pendingSalesFile = null;
+  _readSalesFile(p.file, null, p.branch, p.date, p.fp);
+}
+function _readSalesFile(file, input, branch, date, fp){
   if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
   var reader = new FileReader();
   reader.onload = function(e){
@@ -2009,13 +2066,33 @@ function importSalesXLSX(input){
       var wb = XLSX.read(e.target.result, {type:'array'});
       var ws = wb.Sheets[wb.SheetNames[0]];
       var raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
-      processSalesRows(raw, input, branch, date);
-    } catch(ex){ toast('❌ อ่านไฟล์ไม่ได้: '+ex.message); input.value=''; }
+      processSalesRows(raw, input, branch, date, fp, file.name);
+    } catch(ex){ toast('❌ อ่านไฟล์ไม่ได้: '+ex.message); if(input) input.value=''; }
   };
   reader.readAsArrayBuffer(file);
 }
+// ─────────────────────────────────────────────────────────────────────
+function importSalesXLSX(input){
+  var branch = document.getElementById('sales-import-branch').value;
+  var date   = document.getElementById('sales-import-date').value;
+  if(!branch){ toast('⚠️ เลือกสาขาก่อนนำเข้าไฟล์'); input.value=''; return; }
+  if(!date)  { toast('⚠️ เลือกวันที่ให้ตรงกับ Session การนับ'); input.value=''; return; }
+  var file = input.files[0]; if(!file) return;
+  var fp = file.name + '|' + file.size + '|' + file.lastModified;
+  var history = _getSalesHistory(branch, date);
+  var isDup = history.some(function(u){ return u.fp === fp; });
+  var statusEl = document.getElementById('import-sales-status');
+  if(isDup){
+    statusEl.style.color = '#e67e22';
+    statusEl.textContent = '⚠️ ไฟล์ "'+file.name+'" เคยอัพโหลดแล้ว! ถ้าต้องการบวกซ้ำให้กด "อัพโหลดซ้ำ (ยืนยัน)"';
+    document.getElementById('sales-force-upload-btn').style.display = '';
+    window._pendingSalesFile = { file: file, branch: branch, date: date, fp: fp };
+    input.value = ''; return;
+  }
+  _readSalesFile(file, input, branch, date, fp);
+}
 
-async function processSalesRows(raw, input, branch, date){
+async function processSalesRows(raw, input, branch, date, fp, fileName){
   var statusEl = document.getElementById('import-sales-status');
   statusEl.style.color = '#555';
   statusEl.textContent = 'กำลังอ่านข้อมูล...';
@@ -2073,7 +2150,7 @@ async function processSalesRows(raw, input, branch, date){
     statusEl.style.color='#e74c3c';
     var modeMsg = hasNeg ? ' (Transaction mode: net ทุก item = 0 หรือบวก — ยอดขายสุทธิเป็น 0)' : ' (ต้องมี 2 คอลัมน์: รหัสสินค้า, จำนวนขาย)';
     statusEl.textContent='⚠️ ไม่พบยอดขายสุทธิ'+modeMsg;
-    input.value=''; return;
+    if(input) input.value=''; return;
   }
 
   var modeLabel = hasNeg
@@ -2111,24 +2188,42 @@ async function processSalesRows(raw, input, branch, date){
     }
   });
 
-  var saveErr = await saveSalesBalance(branch, finalSoldMap, date);
+  // ── โหลดค่ายอดขายเดิมจาก DB แล้วบวกสะสม (รองรับอัพโหลดหลายไฟล์) ──
+  setSyncDot('syncing');
+  statusEl.textContent = 'กำลังดึงข้อมูลยอดขายเดิม...';
+  var { data: existSalesData, error: existSalesErr } = await supabase.from('product_sales')
+    .select('barcode,sold_qty').eq('branch', branch).eq('sale_date', date);
+  var existSalesMap = {};
+  if(!existSalesErr && existSalesData) existSalesData.forEach(function(r){ existSalesMap[r.barcode] = parseFloat(r.sold_qty)||0; });
+
+  // บวกค่าใหม่กับค่าเดิม (accumulate — ไม่ใช่ replace)
+  var accumulatedSoldMap = Object.assign({}, existSalesMap);
+  Object.keys(finalSoldMap).forEach(function(bc){
+    accumulatedSoldMap[bc] = (accumulatedSoldMap[bc] || 0) + finalSoldMap[bc];
+  });
+
+  var saveErr = await saveSalesBalance(branch, accumulatedSoldMap, date);
   setSyncDot(saveErr ? 'off' : 'on');
   if(saveErr){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ บันทึกไม่ได้: '+saveErr.message; return; }
 
-  // อัปเดต salesBal ใน memory ทันที (ถ้า session ตรง)
+  // อัปเดต salesBal ใน memory ทันที (ถ้า session ตรง) — ใช้ค่าสะสม ไม่ใช่แค่ค่าใหม่
   if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
-    Object.assign(salesBal, finalSoldMap);
+    Object.keys(accumulatedSoldMap).forEach(function(bc){ salesBal[bc] = accumulatedSoldMap[bc]; });
     renderCounts();
     renderSalesList();
   }
 
   statusEl.style.color='#27ae60';
   var cancelNote = (hasNeg && cancelledCount > 0) ? ' | ยกเลิกหมด '+cancelledCount+' รหัส' : '';
-  statusEl.textContent='✅ บันทึกยอดขาย '+matched+' รายการ → product_sales สาขา "'+branch+'" วันที่ '+date+cancelNote;
+  statusEl.textContent='✅ บันทึกยอดขาย '+matched+' รายการ (สะสมแล้ว) → product_sales สาขา "'+branch+'" วันที่ '+date+cancelNote;
   toast('✅ บันทึกยอดขาย '+matched+' รายการ สาขา "'+branch+'"');
 
+  // บันทึก fingerprint ลง localStorage เพื่อป้องกัน double upload
+  if(fp && fileName) _addSalesHistory(branch, date, fileName, fp);
+  updateSalesUploadHistory(branch, date);
+
   if(typeof activePage !== 'undefined' && activePage === 'report') loadReport();
-  input.value='';
+  if(input) input.value='';
 }
 
 // ═══════════════════════════════════════
@@ -2478,8 +2573,11 @@ async function loadReport(){
   var date   = document.getElementById('rpt-date').value;
 
   setSyncDot('syncing');
-  // ดึงทั้ง completed และ in_progress
-  var q = supabase.from('count_sessions').select('*, count_items(*)').order('count_date',{ascending:false});
+  // ดึง completed + in_progress ที่ไม่ได้อยู่ในโหมดนับซ่อม (recount_by IS NULL)
+  // session ที่ recount_by != null = กำลัง recount อยู่ ข้อมูลยังไม่สมบูรณ์ → ไม่แสดงใน report
+  var q = supabase.from('count_sessions').select('*')
+    .is('recount_by', null)
+    .order('count_date',{ascending:false});
   if(branch) q = q.eq('branch', branch);
   if(date)   q = q.eq('count_date', date);
 
@@ -2488,6 +2586,26 @@ async function loadReport(){
   if(myVersion !== _loadReportVersion){ setSyncDot('on'); return; }
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ '+error.message); return; }
+
+  // ── Query count_items แยก เพื่อให้รายงานย้อนหลังขึ้นได้ถูกต้อง ──
+  // (embedded join อาจคืนค่าว่างสำหรับ session ที่ไม่ใช่ปัจจุบัน)
+  if((data||[]).length){
+    var sessionIds = data.map(function(s){ return s.id; });
+    var { data: itemsData, error: itemsErr } = await supabase
+      .from('count_items').select('*').in('session_id', sessionIds);
+    if(myVersion !== _loadReportVersion){ setSyncDot('on'); return; }
+    if(!itemsErr && itemsData){
+      // จัดกลุ่ม count_items ตาม session_id
+      var itemsBySession = {};
+      itemsData.forEach(function(item){
+        if(!itemsBySession[item.session_id]) itemsBySession[item.session_id] = [];
+        itemsBySession[item.session_id].push(item);
+      });
+      data.forEach(function(s){ s.count_items = itemsBySession[s.id] || []; });
+    } else {
+      data.forEach(function(s){ s.count_items = s.count_items || []; });
+    }
+  }
 
   // Overlay local counts[] (in-flight writes ที่ยังไม่ sync ลง DB)
   // เพื่อให้ Report tab แสดงข้อมูลตรงกับ Tab นับสต็อก
@@ -2850,7 +2968,8 @@ async function buildAggData(){
 }
 
 async function exportCSV(){
-  toast('⏳ กำลังเตรียมข้อมูล...');
+  toast('⏳ โหลดข้อมูลล่าสุดก่อน export...');
+  await loadReport();   // ← reload ให้ตรงกับหน้าจอเสมอ
   var agg = await buildAggData();
   if(!agg){ toast('⚠️ ไม่มีข้อมูล'); return; }
   var rows = [['ห้าง/สาขา','วันที่','ผู้นับ','ลำดับ','Barcode','Item Number (รหัสสินค้า)','ชื่อสินค้า','สถานะ','ยอดคงเหลือ','นับจริง','จำนวนขาย','FOC','ผลต่าง']];
@@ -2880,7 +2999,8 @@ async function exportCSV(){
 
 async function exportExcel(){
   if(!window.XLSX){ toast('⚠️ กำลังโหลด SheetJS...'); return; }
-  toast('⏳ กำลังเตรียมข้อมูล...');
+  toast('⏳ โหลดข้อมูลล่าสุดก่อน export...');
+  await loadReport();   // ← reload ให้ตรงกับหน้าจอเสมอ
   var agg = await buildAggData();
   if(!agg){ toast('⚠️ ไม่มีข้อมูล'); return; }
 
