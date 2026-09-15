@@ -739,6 +739,19 @@ function getBal(bc){
   // ถ้ายังไม่มียอดสาขา → แสดง 0 (ไม่ fallback ไป products.balance)
   return branchBal[bc] !== undefined ? branchBal[bc] : 0;
 }
+
+// normalize วันที่เป็น YYYY-MM-DD — DB อาจคืน '2026-09-14T00:00:00+00:00'
+// ขณะที่ <input type="date"> ให้ '2026-09-14' ถ้าเทียบด้วย === ตรง ๆ จะ false เสมอ
+function _normDate(d){
+  if(!d) return '';
+  return String(d).slice(0, 10);
+}
+// session ปัจจุบันตรงกับ สาขา+วันที่ ที่กำลัง import อยู่ไหม
+function _sessionMatches(branch, date){
+  if(!currentSession) return false;
+  return String(currentSession.branch).trim() === String(branch).trim()
+      && _normDate(currentSession.count_date) === _normDate(date);
+}
 function clearBranchBal(){
   if(!confirm('ล้างยอดคงเหลือทั้งหมดให้เป็น 0?\n\nยอดคงเหลือในหน้านับสต็อกจะแสดงเป็น 0 จนกว่าจะ import ใหม่')) return;
   branchBal = {};
@@ -749,9 +762,93 @@ async function loadBranchBalance(branch, date){
   branchBal = {};
   if(!branch || !date) return;
   var { data, error } = await supabase.from('product_balances')
-    .select('barcode,balance').eq('branch', branch).eq('balance_date', date);
+    .select('barcode,balance').eq('branch', branch).eq('balance_date', _normDate(date));
   if(!error && data) data.forEach(function(r){ branchBal[r.barcode] = parseFloat(r.balance)||0; });
 }
+// ดึงยอดคงเหลือ / ขาย / FOC ของ session ปัจจุบันใหม่จาก DB
+// เรียกอัตโนมัติทุกครั้งที่เข้าหน้านับสต็อก/ยอดขาย — ไม่ต้องกดปุ่ม ไม่มี toast กวน
+// import ยอดจากเครื่องไหนก็ได้ กลับมาหน้านับแล้วขึ้นเอง
+var _syncingBal = false;
+async function syncSessionBalances(){
+  if(!currentSession || _syncingBal) return;
+  _syncingBal = true;
+  try {
+    await Promise.all([
+      loadBranchBalance(currentSession.branch, currentSession.count_date),
+      loadSalesBalance(currentSession.branch, currentSession.count_date),
+      loadFocBalance(currentSession.branch, currentSession.count_date)
+    ]);
+    renderCounts();
+    if(activePage === 'sales' && typeof renderSalesList === 'function') renderSalesList();
+    if(window._selBC) updateSelCounted(window._selBC);
+    if(!Object.keys(branchBal).length){
+      console.warn('[NCH] ไม่พบยอดคงเหลือของ branch="'+currentSession.branch+
+                   '" balance_date="'+_normDate(currentSession.count_date)+'"');
+      if(typeof diagnoseBalances === 'function') diagnoseBalances();
+    }
+  } catch(e){
+    console.warn('[NCH] syncSessionBalances failed:', e);
+  } finally {
+    _syncingBal = false;
+  }
+}
+
+// วินิจฉัย: บอกว่าใน product_balances มีข้อมูลของสาขา/วันที่ไหนบ้าง
+// ใช้เมื่อโหลดยอดแล้วไม่เจอ เพื่อชี้ว่า import ลงผิดสาขา ผิดวันที่ หรือไม่ลงเลย
+async function diagnoseBalances(){
+  if(!currentSession) return;
+  var wantBranch = currentSession.branch;
+  var wantDate   = _normDate(currentSession.count_date);
+  var L = [];
+  L.push('รอบที่เปิดอยู่ต้องการ:');
+  L.push('   สาขา  = "'+wantBranch+'"');
+  L.push('   วันที่ = "'+wantDate+'"');
+  L.push('   count_date ดิบจาก DB = "'+currentSession.count_date+'"');
+  L.push('');
+
+  var r1 = await supabase.from('product_balances')
+    .select('balance_date').eq('branch', wantBranch).limit(2000);
+  if(r1.error){
+    L.push('[X] query ไม่ผ่าน: '+r1.error.message);
+  } else if(!r1.data || !r1.data.length){
+    L.push('[X] ไม่มีข้อมูลของสาขา "'+wantBranch+'" เลยสักวัน');
+  } else {
+    var ds = {};
+    r1.data.forEach(function(r){ var d=_normDate(r.balance_date); ds[d]=(ds[d]||0)+1; });
+    L.push('[OK] สาขานี้มีข้อมูลในวันที่:');
+    Object.keys(ds).sort().forEach(function(d){
+      L.push('   '+d+'  ('+ds[d]+' รายการ)'+(d===wantDate?'   << ตรงกับรอบนับ':''));
+    });
+  }
+  L.push('');
+
+  var r2 = await supabase.from('product_balances')
+    .select('branch').eq('balance_date', wantDate).limit(2000);
+  if(r2.data && r2.data.length){
+    var bs = {};
+    r2.data.forEach(function(r){ bs[r.branch]=(bs[r.branch]||0)+1; });
+    L.push('[OK] วันที่นี้มีข้อมูลในสาขา:');
+    Object.keys(bs).sort().forEach(function(b){
+      L.push('   "'+b+'"  ('+bs[b]+' รายการ)'+(b===wantBranch?'   << ตรงกับรอบนับ':''));
+    });
+  } else {
+    L.push('[X] ไม่มีข้อมูลของวันที่ '+wantDate+' ในสาขาใดเลย');
+  }
+
+  var r3 = await supabase.from('product_balances').select('branch,balance_date').limit(5);
+  L.push('');
+  if(r3.error){
+    L.push('[X] อ่านตาราง product_balances ไม่ได้: '+r3.error.message+'  (อาจติด RLS policy)');
+  } else if(!r3.data || !r3.data.length){
+    L.push('[X] ตาราง product_balances ว่างเปล่า — การ import ไม่ได้ลง DB จริง');
+  } else {
+    L.push('ตัวอย่างแถวในตาราง (ดูรูปแบบค่าที่เก็บจริง):');
+    r3.data.forEach(function(r){ L.push('   branch="'+r.branch+'"  balance_date="'+r.balance_date+'"'); });
+  }
+
+  console.log('[NCH ตรวจสอบยอดคงเหลือ]\n'+L.join('\n'));
+}
+
 async function saveBranchBalance(branch, items, date){
   if(!branch || !items || !items.length) return;
   var balDate = date || new Date().toISOString().slice(0,10);
@@ -782,7 +879,7 @@ async function loadSalesBalance(branch, date){
   salesBal = {};
   if(!branch || !date) return;
   var { data, error } = await supabase.from('product_sales')
-    .select('barcode,sold_qty').eq('branch', branch).eq('sale_date', date);
+    .select('barcode,sold_qty').eq('branch', branch).eq('sale_date', _normDate(date));
   if(!error && data) data.forEach(function(r){ salesBal[r.barcode] = parseFloat(r.sold_qty)||0; });
 }
 
@@ -812,16 +909,30 @@ async function addSalesDelta(branch, date, bc, delta){
   delta = parseFloat(delta) || 0;
   if(!branch || !date || !bc || !delta) return null;
   var { data: exist } = await supabase.from('product_sales')
-    .select('sold_qty').eq('branch', branch).eq('sale_date', date).eq('barcode', bc).maybeSingle();
+    .select('sold_qty').eq('branch', branch).eq('sale_date', _normDate(date)).eq('barcode', bc).maybeSingle();
   var total = (exist ? (parseFloat(exist.sold_qty)||0) : 0) + delta;
   var m = {}; m[bc] = total;
   var err = await saveSalesBalance(branch, m, date);
   if(err) return null;
   // sync in-memory ถ้าเป็นสาขา+วันที่ของ session ปัจจุบัน
-  if(currentSession && currentSession.branch === branch && currentSession.count_date === date){
+  if(_sessionMatches(branch, date)){
     salesBal[bc] = total;
   }
   return total;
+}
+// ตั้งยอดขาย (product_sales) เป็นค่า "ตายตัว" แทนการบวกสะสม
+// ใช้กับสแกนครั้งแรกของบาร์โค้ดในโหมดนับซ่อม — การนับซ่อมคือการ "แก้ยอดใหม่ทั้งหมด"
+// ของบาร์โค้ดนั้น ไม่ใช่การนับเพิ่ม จึงต้อง SET ยอดขายทับของเดิม ไม่ใช่บวกเข้าไป
+async function setSalesQty(branch, date, bc, value){
+  value = parseFloat(value) || 0;
+  if(!branch || !date || !bc) return null;
+  var m = {}; m[bc] = value;
+  var err = await saveSalesBalance(branch, m, date);
+  if(err) return null;
+  if(_sessionMatches(branch, date)){
+    salesBal[bc] = value;
+  }
+  return value;
 }
 // ═══════════════════════════════════════
 //  FOC Balance (product_foc table)
@@ -837,7 +948,7 @@ async function loadFocBalance(branch, date){
   focBal = {};
   if(!branch || !date) return;
   var { data, error } = await supabase.from('product_foc')
-    .select('barcode,foc_qty').eq('branch', branch).eq('foc_date', date);
+    .select('barcode,foc_qty').eq('branch', branch).eq('foc_date', _normDate(date));
   if(!error && data) data.forEach(function(r){ focBal[r.barcode] = parseFloat(r.foc_qty)||0; });
 }
 
@@ -1180,6 +1291,9 @@ function go(page){
   if(page==='cash'){ initCash(); calcCash(); }
   if(page==='products') renderProds();
   if(page==='sales') renderSalesPage();
+  // ทุกครั้งที่เข้าหน้านับ/ยอดขาย → ดึงยอดคงเหลือ/ขาย/FOC ของ session นั้นใหม่เสมอ
+  // ไม่ block UI — โหลดเสร็จแล้วค่อย re-render
+  if(page==='count' || page==='sales') syncSessionBalances();
 }
 
 // ═══════════════════════════════════════
@@ -1486,7 +1600,8 @@ async function addCount(bc, qty, soldQty, counterName, location){
         if(rcSetErr){ toast('❌ บันทึกไม่ได้: '+rcSetErr.message); return; }
         if(rcSetRow){
           counts[rcLocalIdx] = rcSetRow;
-          if(soldQty) await addSalesDelta(currentSession.branch, currentSession.count_date, bc, soldQty);
+          // สแกนซ่อมครั้งแรกของบาร์โค้ด → ตั้งยอดขายใหม่ทับของเดิม (ไม่บวกสะสม)
+          await setSalesQty(currentSession.branch, currentSession.count_date, bc, soldQty);
           _selfWriting[bc] = rcSetRow.quantity;
           clearTimeout(_selfWriting['_t_'+bc]);
           _selfWriting['_t_'+bc] = setTimeout(function(){ delete _selfWriting[bc]; delete _selfWriting['_t_'+bc]; }, 5000);
@@ -1520,7 +1635,10 @@ async function addCount(bc, qty, soldQty, counterName, location){
     if(!rcRow){ toast('❌ ไม่ได้รับข้อมูลกลับจาก DB'); return; }
     var rcIdx = counts.findIndex(function(c){ return c.barcode === bc; });
     if(rcIdx > -1) counts[rcIdx] = rcRow; else counts.unshift(rcRow);
-    if(soldQty) await addSalesDelta(currentSession.branch, currentSession.count_date, bc, soldQty);
+    // สแกนซ่อมครั้งแรกของบาร์โค้ด (แม้ผ่าน path fallback นี้) → ตั้งยอดขายใหม่ทับของเดิม
+    // สแกนซ่อมครั้งที่ 2+ ของบาร์โค้ดเดียวกัน → บวกสะสมตามปกติ
+    if(isFirstRc) await setSalesQty(currentSession.branch, currentSession.count_date, bc, soldQty);
+    else if(soldQty) await addSalesDelta(currentSession.branch, currentSession.count_date, bc, soldQty);
     _selfWriting[bc] = rcRow.quantity;
     clearTimeout(_selfWriting['_t_'+bc]);
     _selfWriting['_t_'+bc] = setTimeout(function(){ delete _selfWriting[bc]; delete _selfWriting['_t_'+bc]; }, 5000);
@@ -1914,9 +2032,9 @@ async function startRecount(sessionId, branch, date){
   // Build rptBal + rSales + rFoc for this branch+date
   var rBal = {}, rSales = {}, rFoc = {};
   var [{ data: balData }, { data: salesData }, { data: focDataRc }] = await Promise.all([
-    supabase.from('product_balances').select('barcode,balance').eq('branch', branch).eq('balance_date', date),
-    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', branch).eq('sale_date', date),
-    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', branch).eq('foc_date', date)
+    supabase.from('product_balances').select('barcode,balance').eq('branch', branch).eq('balance_date', _normDate(date)),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', branch).eq('sale_date', _normDate(date)),
+    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', branch).eq('foc_date', _normDate(date))
   ]);
   if(balData) balData.forEach(function(r){ rBal[r.barcode] = parseFloat(r.balance)||0; });
   if(salesData) salesData.forEach(function(r){ rSales[r.barcode] = parseFloat(r.sold_qty)||0; });
@@ -2025,9 +2143,9 @@ async function exitRecountMode(){
     var _pb = currentSession.branch, _pd = currentSession.count_date;
     branchBal = {}; salesBal = {}; focBal = {};
     Promise.all([
-      supabase.from('product_balances').select('barcode,balance').eq('branch',_pb).eq('balance_date',_pd),
-      supabase.from('product_sales').select('barcode,sold_qty').eq('branch',_pb).eq('sale_date',_pd),
-      supabase.from('product_foc').select('barcode,foc_qty').eq('branch',_pb).eq('foc_date',_pd)
+      supabase.from('product_balances').select('barcode,balance').eq('branch',_pb).eq('balance_date', _normDate(_pd)),
+      supabase.from('product_sales').select('barcode,sold_qty').eq('branch',_pb).eq('sale_date', _normDate(_pd)),
+      supabase.from('product_foc').select('barcode,foc_qty').eq('branch',_pb).eq('foc_date', _normDate(_pd))
     ]).then(function(results){
       var bd = results[0].data, sd = results[1].data, fd = results[2].data;
       if(bd) bd.forEach(function(r){ branchBal[r.barcode] = parseFloat(r.balance)||0; });
@@ -2087,20 +2205,20 @@ async function clearSalesBalance(){
   var date   = document.getElementById('sales-import-date').value;
   if(!branch||!date){ toast('⚠️ เลือกสาขาและวันที่ก่อน'); return; }
   if(!confirm('ลบยอดขายทั้งหมดของสาขา "'+branch+'" วันที่ '+date+' ออกจาก DB?')) return;
-  var { error } = await supabase.from('product_sales').delete().eq('branch', branch).eq('sale_date', date);
+  var { error } = await supabase.from('product_sales').delete().eq('branch', branch).eq('sale_date', _normDate(date));
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ ล้างไม่ได้: '+error.message); return; }
   // ล้าง count_items.sold_qty (legacy) ของ session สาขา+วันที่นี้ด้วย
   // ไม่งั้นรายงานจะ fallback ไปอ่านค่าเก่ากลับมา = ล้างไม่จริง
   var { data: clrSess } = await supabase.from('count_sessions')
-    .select('id').eq('branch', branch).eq('count_date', date);
+    .select('id').eq('branch', branch).eq('count_date', _normDate(date));
   if(clrSess && clrSess.length){
     await supabase.from('count_items').update({ sold_qty: 0 })
       .in('session_id', clrSess.map(function(s){ return s.id; }));
   }
   _clearSalesHistory(branch, date);
   updateSalesUploadHistory(branch, date);
-  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+  if(_sessionMatches(branch, date)){
     salesBal = {}; renderCounts(); renderSalesList();
   }
   document.getElementById('import-sales-status').textContent = '';
@@ -2226,7 +2344,7 @@ async function processSalesRows(raw, input, branch, date, fp, fileName){
 
   // ตรวจว่า branch มี session ตรงวันที่หรือไม่ (warn เท่านั้น ไม่ block)
   var { data: sessions } = await supabase.from('count_sessions')
-    .select('id').eq('branch', branch).eq('count_date', date).limit(1);
+    .select('id').eq('branch', branch).eq('count_date', _normDate(date)).limit(1);
   if(!sessions || !sessions.length){
     statusEl.style.color = '#e67e22';
     statusEl.textContent = '⚠️ ยังไม่มี Session สาขา "'+branch+'" วันที่ '+date+' แต่จะบันทึกยอดขายไว้ก่อน';
@@ -2254,7 +2372,7 @@ async function processSalesRows(raw, input, branch, date, fp, fileName){
   setSyncDot('syncing');
   statusEl.textContent = 'กำลังดึงข้อมูลยอดขายเดิม...';
   var { data: existSalesData, error: existSalesErr } = await supabase.from('product_sales')
-    .select('barcode,sold_qty').eq('branch', branch).eq('sale_date', date);
+    .select('barcode,sold_qty').eq('branch', branch).eq('sale_date', _normDate(date));
   var existSalesMap = {};
   if(!existSalesErr && existSalesData) existSalesData.forEach(function(r){ existSalesMap[r.barcode] = parseFloat(r.sold_qty)||0; });
 
@@ -2269,7 +2387,7 @@ async function processSalesRows(raw, input, branch, date, fp, fileName){
   if(saveErr){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ บันทึกไม่ได้: '+saveErr.message; return; }
 
   // อัปเดต salesBal ใน memory ทันที (ถ้า session ตรง) — ใช้ค่าสะสม ไม่ใช่แค่ค่าใหม่
-  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+  if(_sessionMatches(branch, date)){
     Object.keys(accumulatedSoldMap).forEach(function(bc){ salesBal[bc] = accumulatedSoldMap[bc]; });
     renderCounts();
     renderSalesList();
@@ -2323,12 +2441,12 @@ async function clearFocBalance(){
   if(!confirm('ล้างข้อมูล FOC ทั้งหมดของสาขา "'+branch+'" วันที่ '+date+' ใช่ไหม?')) return;
   setSyncDot('syncing');
   var { error } = await supabase.from('product_foc').delete()
-    .eq('branch', branch).eq('foc_date', date);
+    .eq('branch', branch).eq('foc_date', _normDate(date));
   setSyncDot(error ? 'off' : 'on');
   if(error){ toast('❌ ล้างไม่ได้: '+error.message); return; }
   _clearFocHistory(branch, date);
   updateFocUploadHistory(branch, date);
-  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+  if(_sessionMatches(branch, date)){
     focBal = {}; renderCounts();
   }
   document.getElementById('import-foc-status').textContent = '';
@@ -2449,7 +2567,7 @@ async function processFocRows(raw, input, branch, date, fp, fileName){
   setSyncDot('syncing');
   statusEl.textContent = 'กำลังดึงข้อมูล FOC เดิม...';
   var { data: existFocData, error: existFocErr } = await supabase.from('product_foc')
-    .select('barcode,foc_qty').eq('branch', branch).eq('foc_date', date);
+    .select('barcode,foc_qty').eq('branch', branch).eq('foc_date', _normDate(date));
   var existFocMap = {};
   if(!existFocErr && existFocData) existFocData.forEach(function(r){ existFocMap[r.barcode] = parseFloat(r.foc_qty)||0; });
 
@@ -2464,7 +2582,7 @@ async function processFocRows(raw, input, branch, date, fp, fileName){
   if(saveErr){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ บันทึกไม่ได้: '+saveErr.message; return; }
 
   // อัปเดต focBal ใน memory ทันที (ถ้า session ตรง) — ใช้ค่าสะสม ไม่ใช่แค่ค่าใหม่
-  if(currentSession && currentSession.branch===branch && currentSession.count_date===date){
+  if(_sessionMatches(branch, date)){
     Object.keys(accumulatedFocMap).forEach(function(bc){ focBal[bc] = accumulatedFocMap[bc]; });
     renderCounts();
   }
@@ -2641,7 +2759,7 @@ async function loadReport(){
     .is('recount_by', null)
     .order('count_date',{ascending:false});
   if(branch) q = q.eq('branch', branch);
-  if(date)   q = q.eq('count_date', date);
+  if(date)   q = q.eq('count_date', _normDate(date));
 
   var { data, error } = await q;
   // ถ้ามี loadReport() call ใหม่กว่าเริ่มแล้ว → ยกเลิก render ของ call นี้
@@ -2687,21 +2805,21 @@ async function loadReport(){
     var _bdKey = _s.branch+'|'+_s.count_date;
     if(!bdProcessed[_bdKey]){
       var { data: _bd } = await supabase.from('product_balances')
-        .select('barcode,balance').eq('branch', _s.branch).eq('balance_date', _s.count_date);
+        .select('barcode,balance').eq('branch', _s.branch).eq('balance_date', _normDate(_s.count_date));
       var _bm = {};
       if(_bd) _bd.forEach(function(r){ _bm[r.barcode] = parseFloat(r.balance)||0; });
       bdProcessed[_bdKey] = _bm;
     }
     if(!sdProcessed[_bdKey]){
       var { data: _sd } = await supabase.from('product_sales')
-        .select('barcode,sold_qty').eq('branch', _s.branch).eq('sale_date', _s.count_date);
+        .select('barcode,sold_qty').eq('branch', _s.branch).eq('sale_date', _normDate(_s.count_date));
       var _sm = {};
       if(_sd) _sd.forEach(function(r){ _sm[r.barcode] = parseFloat(r.sold_qty)||0; });
       sdProcessed[_bdKey] = _sm;
     }
     if(!fdProcessed[_bdKey]){
       var { data: _fd } = await supabase.from('product_foc')
-        .select('barcode,foc_qty').eq('branch', _s.branch).eq('foc_date', _s.count_date);
+        .select('barcode,foc_qty').eq('branch', _s.branch).eq('foc_date', _normDate(_s.count_date));
       var _fm = {};
       if(_fd) _fd.forEach(function(r){ _fm[r.barcode] = parseFloat(r.foc_qty)||0; });
       fdProcessed[_bdKey] = _fm;
@@ -2713,7 +2831,11 @@ async function loadReport(){
   // ตรวจอีกครั้งหลัง balance loop (ใช้เวลานาน)
   if(myVersion !== _loadReportVersion){ setSyncDot('on'); return; }
 
-  var totalProds = Object.keys(prods).length;
+  // ฐาน SKU ทั้งหมด = จำนวน SKU ที่ upload ยอดคงเหลือมา (product_balances) ของสาขา+วันที่ที่แสดงอยู่
+  // ไม่ใช่จำนวนสินค้าทั้งหมดใน Master Product — ให้ตัวเลขตรงกับข้อมูลที่ upload จริง
+  var balSkuSet = new Set();
+  Object.keys(bdProcessed).forEach(function(k){ Object.keys(bdProcessed[k]).forEach(function(bc){ balSkuSet.add(bc); }); });
+  var totalProds = balSkuSet.size;
 
   // stats
   var totalSess = (data||[]).length;
@@ -2759,15 +2881,17 @@ async function loadReport(){
       aggMap[key].quantity += i.quantity;
     });
 
-    // ─── เพิ่มสินค้าที่ยังไม่ได้นับจาก Master Product ───
-    Object.values(prods).forEach(function(p){
-      var key = p.barcode;
-      if(!aggMap[key]){
-        aggMap[key] = {
-          barcode: p.barcode||'', product_code: p.product_code||'',
-          product_name: p.name||'', unit: p.unit||'ชิ้น',
+    // ─── เพิ่มสินค้าที่ยังไม่ได้นับ — เฉพาะ SKU ที่มีอยู่ใน product_balances ───
+    // (สาขา+วันที่นี้) เท่านั้น ไม่ดึงสินค้าทั้งหมดจาก Master Product
+    // เพื่อให้รายงานแสดงเฉพาะ SKU ที่ upload ยอดคงเหลือมาจริง
+    Object.keys(_sessbal).forEach(function(bc){
+      if(!aggMap[bc]){
+        var p = prods[bc] || {};
+        aggMap[bc] = {
+          barcode: bc, product_code: p.product_code||'',
+          product_name: p.name||bc, unit: p.unit||'ชิ้น',
           quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(p.price)||0,
-          balance: getRptBal(p.barcode), uncounted: true
+          balance: getRptBal(bc), uncounted: true
         };
       }
     });
@@ -2968,9 +3092,9 @@ async function buildAggData(){
     // โหลด balance + sales + foc ของสาขา+วันที่ของ session นั้น
     if(!bdCache[_cacheKey]){
       var [{ data: sbData }, { data: ssData }, { data: sfData }] = await Promise.all([
-        supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
-        supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
-        supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+        supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', _normDate(s.count_date)),
+        supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', _normDate(s.count_date)),
+        supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', _normDate(s.count_date))
       ]);
       var bm = {}; if(sbData) sbData.forEach(function(r){ bm[r.barcode] = parseFloat(r.balance)||0; });
       var sm = {}; if(ssData) ssData.forEach(function(r){ sm[r.barcode] = parseFloat(r.sold_qty)||0; });
@@ -3002,15 +3126,16 @@ async function buildAggData(){
       }
       aggMap[key].quantity += i.quantity;
     });
-    // เพิ่มสินค้าที่ยังไม่ได้นับ (ยอดจาก product_balances สาขา+วันที่)
-    Object.values(prods).forEach(function(p){
-      var key = p.barcode;
-      if(!aggMap[key]){
-        aggMap[key] = {
-          barcode: p.barcode||'', product_code: p.product_code||'',
-          product_name: p.name||'', unit: p.unit||'ชิ้น',
+    // เพิ่มสินค้าที่ยังไม่ได้นับ — เฉพาะ SKU ที่มีอยู่ใน product_balances สาขา+วันที่นี้เท่านั้น
+    // (ไม่ดึงสินค้าทั้งหมดจาก Master Product — export ต้องตรงกับที่ upload ยอดคงเหลือมาจริง)
+    Object.keys(sBal).forEach(function(bc){
+      if(!aggMap[bc]){
+        var p = prods[bc] || {};
+        aggMap[bc] = {
+          barcode: bc, product_code: p.product_code||'',
+          product_name: p.name||bc, unit: p.unit||'ชิ้น',
           quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(p.price)||0,
-          balance: getSBal(p.barcode), uncounted: true
+          balance: getSBal(bc), uncounted: true
         };
       }
     });
@@ -3174,6 +3299,86 @@ async function exportExcel(){
 //  Import CSV
 // ═══════════════════════════════════════
 // ═══════════════════════════════════════
+//  Balance file parser — จับคู่คอลัมน์จากชื่อ header จริง
+//  แทนการเดาตำแหน่งคอลัมน์ (ไฟล์ export จากระบบต่างกันมีจำนวน/ลำดับคอลัมน์ไม่เท่ากัน
+//  เช่นไฟล์ On-hand inventory จาก D365/BC มี 23 คอลัมน์ — เดาตำแหน่งแล้วอ่านผิดคอลัมน์เงียบ ๆ)
+// ═══════════════════════════════════════
+// รายชื่อ header ที่ถือว่าเป็น "รหัสสินค้า/บาร์โค้ด" — เรียงตามลำดับความสำคัญ
+var _CODE_HEADERS = [/^barcode$/i, /^item\s*number$/i, /^รหัส/i, /^code$/i, /^item\s*no\.?$/i];
+// รายชื่อ header ที่ถือว่าเป็น "ยอดคงเหลือ" — ห้ามแมตช์ physical inventory2 / reserved / on order ฯลฯ
+var _BAL_HEADERS = [/^physical\s*inventory$/i, /^balance$/i, /^คงเหลือ/i, /^on\s*hand$/i, /^qty\s*on\s*hand$/i, /^ยอดคงเหลือ/i];
+
+// หา index คอลัมน์จาก header row โดยแมตช์ตาม pattern เรียงลำดับ (ตัวแรกที่เจอชนะ)
+function _findColByHeader(headerRow, patterns){
+  for(var p=0; p<patterns.length; p++){
+    for(var c=0; c<headerRow.length; c++){
+      if(patterns[p].test(String(headerRow[c]||'').trim())) return c;
+    }
+  }
+  return -1;
+}
+
+// parse ไฟล์ balance เป็น { barcode → balance } — คืน diagnostics มาด้วยเสมอ
+// ให้ผู้ import เห็นว่าจับคอลัมน์ไหนมาใช้ ป้องกันอ่านผิดคอลัมน์แบบเงียบ ๆ อีก
+function _parseBalanceFile(raw){
+  var diag = { mode: '', codeCol: -1, balCol: -1, rowsScanned: 0, rowsParsed: 0 };
+  var balMap = {};
+  if(!raw || !raw.length) return { balMap: balMap, diag: diag };
+
+  // หา header row แถวแรกที่ไม่ว่างเปล่า
+  var headerRowIdx = -1;
+  for(var i=0; i<raw.length; i++){
+    if(raw[i] && raw[i].some(function(v){ return String(v||'').trim() !== ''; })){ headerRowIdx = i; break; }
+  }
+
+  if(headerRowIdx > -1){
+    var codeCol = _findColByHeader(raw[headerRowIdx], _CODE_HEADERS);
+    var balCol  = _findColByHeader(raw[headerRowIdx], _BAL_HEADERS);
+    if(codeCol > -1 && balCol > -1){
+      diag.mode = 'header'; diag.codeCol = codeCol; diag.balCol = balCol;
+      for(var r=headerRowIdx+1; r<raw.length; r++){
+        var row = raw[r]; if(!row) continue;
+        diag.rowsScanned++;
+        var code = String(row[codeCol]||'').trim();
+        var balRaw = row[balCol];
+        if(!code) continue;
+        var bal = parseFloat(balRaw);
+        if(isNaN(bal)) continue;
+        balMap[code] = bal;
+        diag.rowsParsed++;
+      }
+      return { balMap: balMap, diag: diag };
+    }
+  }
+
+  // ── Fallback: ไม่เจอ header ที่รู้จัก ใช้การเดาตำแหน่งแบบเดิม (ไฟล์ 2 คอลัมน์ หรือ Template_Data) ──
+  diag.mode = 'positional';
+  var isHeader = function(v){ return !v || /^(barcode|code|รหัส|description|รายการ|balance|คงเหลือ|uom|หน่วย|ราคา|price|item)/i.test(String(v)); };
+  for(var i2=0; i2<raw.length; i2++){
+    var r2 = raw[i2];
+    var c0 = String(r2[0]||'').trim();
+    var c1 = String(r2[1]||'').trim();
+    if(!c0 && !c1) continue;
+    if(isHeader(c0) && (isHeader(c1)||!c1)) continue;
+    diag.rowsScanned++;
+    var bal2;
+    if(r2.length >= 5 && (r2[4]||r2[4]===0)){
+      diag.balCol = 4;
+      bal2 = parseFloat(r2[4])||0;
+      if(c0) balMap[c0] = bal2;
+      if(c1) balMap[c1] = bal2;
+    } else {
+      diag.balCol = 1;
+      bal2 = parseFloat(c1)||0;
+      if(c0) balMap[c0] = bal2;
+    }
+    diag.rowsParsed++;
+  }
+  diag.codeCol = 0;
+  return { balMap: balMap, diag: diag };
+}
+
+// ═══════════════════════════════════════
 //  Import Balance (ยอดคงเหลือ only)
 // ═══════════════════════════════════════
 function importBalanceXLSX(input){
@@ -3217,38 +3422,11 @@ async function processBalanceRows(raw, input, fmt){
   statusEl.style.color = '#555';
   statusEl.textContent = 'กำลังอ่านข้อมูล...';
 
-  // detect header row — skip rows where col0/col1 looks like a label
-  var isHeader = function(v){ return !v || /^(barcode|code|รหัส|description|รายการ|balance|คงเหลือ|uom|หน่วย|ราคา|price)/i.test(String(v)); };
-
-  // build map: code→balance (and barcode→balance)
-  var balMap = {}; // key = product_code or barcode → balance value
-  var skipped = 0;
-  for(var i=0; i<raw.length; i++){
-    var r = raw[i];
-    var c0 = String(r[0]||'').trim();
-    var c1 = String(r[1]||'').trim();
-
-    // skip header/empty rows
-    if(!c0 && !c1) continue;
-    if(isHeader(c0) && (isHeader(c1)||!c1)){ skipped++; continue; }
-
-    // detect layout:
-    // 2-col:  col0=รหัส/Barcode, col1=ยอดคงเหลือ
-    // full Template_Data: col0=Barcode, col1=Code, col4=Balance
-    var code, bal;
-    if(raw[i].length >= 5 && (raw[i][4]||raw[i][4]===0)){
-      // full Template_Data format
-      code = c1 || c0;
-      bal  = parseFloat(raw[i][4])||0;
-      if(c0) balMap[c0] = bal;   // barcode key
-      if(c1) balMap[c1] = bal;   // code key
-    } else {
-      // simple 2-col: Code, Balance
-      code = c0;
-      bal  = parseFloat(c1)||0;
-      if(code) balMap[code] = bal;
-    }
-  }
+  var parsed = _parseBalanceFile(raw);
+  var balMap = parsed.balMap;
+  var diag   = parsed.diag;
+  console.log('[NCH import balance] mode='+diag.mode+' codeCol='+diag.codeCol+' balCol='+diag.balCol+
+              ' rowsScanned='+diag.rowsScanned+' rowsParsed='+diag.rowsParsed);
 
   var keys = Object.keys(balMap);
   if(!keys.length){ statusEl.style.color='#e74c3c'; statusEl.textContent='⚠️ ไม่พบข้อมูลยอดคงเหลือในไฟล์'; input.value=''; return; }
@@ -3316,29 +3494,11 @@ async function processBranchBalanceRows(raw, input, branch, date){
   statusEl.style.color = '#555';
   statusEl.textContent = 'กำลังอ่านข้อมูล...';
 
-  var isHeader = function(v){ return !v || /^(barcode|code|รหัส|description|รายการ|balance|คงเหลือ|uom|หน่วย|ราคา|price)/i.test(String(v)); };
-
-  // build balMap: barcode/product_code → balance
-  var balMap = {};
-  for(var i=0; i<raw.length; i++){
-    var r = raw[i];
-    var c0 = String(r[0]||'').trim();
-    var c1 = String(r[1]||'').trim();
-    if(!c0 && !c1) continue;
-    if(isHeader(c0) && (isHeader(c1)||!c1)) continue;
-
-    var bal;
-    if(raw[i].length >= 5 && (raw[i][4]||raw[i][4]===0)){
-      // Template_Data format: col0=Barcode, col1=Code, col4=Balance
-      bal = parseFloat(raw[i][4])||0;
-      if(c0) balMap[c0] = bal;
-      if(c1) balMap[c1] = bal;
-    } else {
-      // 2-col: Code/Barcode, Balance
-      bal = parseFloat(c1)||0;
-      if(c0) balMap[c0] = bal;
-    }
-  }
+  var parsed = _parseBalanceFile(raw);
+  var balMap = parsed.balMap;
+  var diag   = parsed.diag;
+  console.log('[NCH import branch balance] mode='+diag.mode+' codeCol='+diag.codeCol+' balCol='+diag.balCol+
+              ' rowsScanned='+diag.rowsScanned+' rowsParsed='+diag.rowsParsed);
 
   var keys = Object.keys(balMap);
   if(!keys.length){
@@ -3364,6 +3524,22 @@ async function processBranchBalanceRows(raw, input, branch, date){
     input.value=''; return;
   }
 
+  // ── Preview ก่อนเขียน DB — ป้องกันอ่านผิดคอลัมน์แบบเงียบ ๆ ซ้ำอีก ──
+  var allZero = upserts.every(function(u){ return u.balance === 0; });
+  var sample = upserts.slice(0,3).map(function(u){ return u.barcode+' = '+u.balance; }).join('\n');
+  var colInfo = diag.mode === 'header'
+    ? 'อ่านจาก header: คอลัมน์รหัส index '+diag.codeCol+', คอลัมน์ยอด index '+diag.balCol
+    : '⚠️ ไม่เจอชื่อคอลัมน์ที่รู้จัก — ใช้การเดาตำแหน่งคอลัมน์แบบเดิม (ตรวจผลให้ดี)';
+  var confirmMsg = 'นำเข้ายอดคงเหลือ สาขา "'+branch+'" วันที่ '+date+'\n\n'+
+    colInfo+'\n'+
+    'พบในไฟล์ '+keys.length+' รหัส → ตรงกับสินค้าใน DB '+upserts.length+' รายการ\n'+
+    'ตัวอย่าง:\n'+sample+
+    (allZero ? '\n\n⚠️⚠️ ทุกรายการมียอด = 0 — น่าจะอ่านผิดคอลัมน์ ตรวจไฟล์ก่อนกดตกลง!' : '')+
+    '\n\nยืนยันบันทึกลง DB?';
+  if(!confirm(confirmMsg)){
+    statusEl.style.color='#888'; statusEl.textContent='ยกเลิกการนำเข้า'; input.value=''; return;
+  }
+
   statusEl.textContent = 'กำลัง upsert '+upserts.length+' รายการเข้าสาขา "'+branch+'" วันที่ '+date+'...';
   setSyncDot('syncing');
 
@@ -3380,15 +3556,24 @@ async function processBranchBalanceRows(raw, input, branch, date){
   setSyncDot(errMsg ? 'off' : 'on');
   if(errMsg){ statusEl.style.color='#e74c3c'; statusEl.textContent='❌ '+errMsg; return; }
 
-  // update local branchBal if current session matches branch + date
-  if(currentSession && currentSession.branch === branch && currentSession.count_date === date){
-    upserts.forEach(function(u){ branchBal[u.barcode] = u.balance; });
-    renderCounts();
+  // โหลด branchBal ใหม่จาก DB (authoritative) แทนการ patch จาก memory
+  // กัน branchBal เพี้ยนถ้า upsert บางตัว fail หรือมี row เดิมที่ไฟล์นี้ไม่ได้แตะ
+  if(_sessionMatches(branch, date)){
+    await syncSessionBalances();
+    statusEl.style.color='#27ae60';
+    statusEl.textContent='✅ อัปเดตยอดสาขา "'+branch+'" วันที่ '+date+' สำเร็จ '+done+' รายการ (จากไฟล์ '+keys.length+' รหัส)';
+    toast('✅ อัปเดตยอดสาขา '+done+' รายการ — แสดงในหน้านับสต็อกแล้ว');
+  } else if(currentSession){
+    // import สำเร็จ แต่คนละสาขา/วันที่กับรอบที่เปิดอยู่ → เตือนให้ชัด
+    statusEl.style.color='#e67e22';
+    statusEl.textContent='⚠️ บันทึกลง DB สำเร็จ '+done+' รายการ แต่ไม่ตรงกับรอบที่เปิดอยู่ '+
+      '('+currentSession.branch+' / '+_normDate(currentSession.count_date)+') — ยอดจะไม่ขึ้นในหน้านับสต็อก';
+    toast('⚠️ ยอดลง DB แล้ว แต่คนละสาขา/วันที่กับรอบที่เปิดอยู่');
+  } else {
+    statusEl.style.color='#27ae60';
+    statusEl.textContent='✅ อัปเดตยอดสาขา "'+branch+'" วันที่ '+date+' สำเร็จ '+done+' รายการ — เริ่มรอบนับให้ตรงสาขา+วันที่นี้เพื่อให้ยอดขึ้น';
+    toast('✅ อัปเดตยอดสาขา '+done+' รายการ');
   }
-
-  statusEl.style.color='#27ae60';
-  statusEl.textContent='✅ อัปเดตยอดสาขา "'+branch+'" วันที่ '+date+' สำเร็จ '+done+' รายการ (จากไฟล์ '+keys.length+' รหัส)';
-  toast('✅ อัปเดตยอดสาขา '+done+' รายการ');
   input.value='';
 }
 
@@ -3994,8 +4179,8 @@ async function loadHistoryItems(i){
   if(error){ el.textContent = '❌ '+error.message; return; }
   s._items = data || [];
   var [{ data: hbd2 }, { data: hsd2 }] = await Promise.all([
-    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
-    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date)
+    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', _normDate(s.count_date)),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', _normDate(s.count_date))
   ]);
   var hBal2 = {}; if(hbd2) hbd2.forEach(function(r){ hBal2[r.barcode] = parseFloat(r.balance)||0; });
   var hSales2 = {}; if(hsd2) hsd2.forEach(function(r){ hSales2[r.barcode] = parseFloat(r.sold_qty)||0; });
@@ -4156,9 +4341,9 @@ async function exportHistoryExcel(i){
     s._items = data || [];
   }
   var [{ data: hbd }, { data: hsd }, { data: hfd }] = await Promise.all([
-    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
-    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
-    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', _normDate(s.count_date)),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', _normDate(s.count_date)),
+    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', _normDate(s.count_date))
   ]);
   var hBalMap = {}; if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
   var hSalesMap = {}; if(hsd) hsd.forEach(function(r){ hSalesMap[r.barcode] = parseFloat(r.sold_qty)||0; });
@@ -4175,9 +4360,9 @@ async function exportHistoryCSV(i){
     s._items = data || [];
   }
   var [{ data: hbd }, { data: hsd }, { data: hfd }] = await Promise.all([
-    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
-    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
-    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+    supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', _normDate(s.count_date)),
+    supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', _normDate(s.count_date)),
+    supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', _normDate(s.count_date))
   ]);
   var hBalMap = {}; if(hbd) hbd.forEach(function(r){ hBalMap[r.barcode] = parseFloat(r.balance)||0; });
   var hSalesMap = {}; if(hsd) hsd.forEach(function(r){ hSalesMap[r.barcode] = parseFloat(r.sold_qty)||0; });
@@ -4329,7 +4514,7 @@ async function loadCashReport(){
   if(!el) return;
   var q = supabase.from('cash_counts').select('*').order('created_at',{ascending:false});
   if(branch) q = q.eq('branch', branch);
-  if(date)   q = q.eq('count_date', date);
+  if(date)   q = q.eq('count_date', _normDate(date));
   var { data, error } = await q;
   if(error||!(data&&data.length)){ if(hd) hd.style.display='none'; el.innerHTML=''; return; }
   if(hd) hd.style.display='block';
@@ -4448,9 +4633,9 @@ async function printSession(sessionId){
   var psBal = {}, psSales = {}, psFoc = {};
   if(s.branch && s.count_date){
     var [{ data: psData }, { data: psSalesData }, { data: psFocData }] = await Promise.all([
-      supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', s.count_date),
-      supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', s.count_date),
-      supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', s.count_date)
+      supabase.from('product_balances').select('barcode,balance').eq('branch', s.branch).eq('balance_date', _normDate(s.count_date)),
+      supabase.from('product_sales').select('barcode,sold_qty').eq('branch', s.branch).eq('sale_date', _normDate(s.count_date)),
+      supabase.from('product_foc').select('barcode,foc_qty').eq('branch', s.branch).eq('foc_date', _normDate(s.count_date))
     ]);
     if(psData) psData.forEach(function(r){ psBal[r.barcode] = parseFloat(r.balance)||0; });
     if(psSalesData) psSalesData.forEach(function(r){ psSales[r.barcode] = parseFloat(r.sold_qty)||0; });
@@ -4480,14 +4665,15 @@ async function printSession(sessionId){
     }
     aggMap[key].quantity += i.quantity;
   });
-  Object.values(prods).forEach(function(p){
-    var key = p.barcode;
-    if(!aggMap[key]){
-      aggMap[key] = {
-        barcode: p.barcode||'', product_code: p.product_code||'',
-        product_name: p.name||'', unit: p.unit||'ชิ้น',
+  // เพิ่มสินค้าที่ยังไม่ได้นับ — เฉพาะ SKU ที่มีอยู่ใน product_balances สาขา+วันที่นี้เท่านั้น
+  Object.keys(psBal).forEach(function(bc){
+    if(!aggMap[bc]){
+      var p = prods[bc] || {};
+      aggMap[bc] = {
+        barcode: bc, product_code: p.product_code||'',
+        product_name: p.name||bc, unit: p.unit||'ชิ้น',
         quantity: 0, sold_qty: 0, foc_qty: 0, price: parseFloat(p.price)||0,
-        balance: getPsBal(p.barcode), uncounted: true
+        balance: getPsBal(bc), uncounted: true
       };
     }
   });
