@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>NCH Stock Count</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#cc0000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NCH Stock">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
 <!-- Supabase JS v2 -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <!-- SheetJS for Excel export -->
@@ -51,6 +59,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 .sbtn{padding:8px 14px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
 .sbtn-start{background:#6c3483;color:#fff}
 .sbtn-end{background:#e74c3c;color:#fff}
+.role-hidden{display:none !important}
 .sbtn-new{background:#27ae60;color:#fff}
 /* ─── CARD ─── */
 .card{background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 6px rgba(0,0,0,.07)}
@@ -592,7 +601,7 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <button class="btn btn-danger btn-sm" onclick="doLogout()">ออกจากระบบ</button>
       </div>
       <!-- ── นำเข้าสินค้า (ครั้งเดียว) ── -->
-      <div class="card">
+      <div class="card admin-only-card">
         <h3>📦 นำเข้าสินค้า <span style="font-size:11px;color:#888;font-weight:400">(ทำครั้งเดียว — ข้อมูลอยู่ใน Database ถาวร)</span></h3>
         <p style="font-size:13px;color:#888;margin-bottom:10px">
           รองรับ <strong>Template_Data.xlsx</strong> โดยตรง<br>
@@ -689,6 +698,19 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
         <div id="foc-upload-history" style="margin-top:8px;font-size:12px;color:#888"></div>
       </div>
 
+      <!-- ── จัดการผู้ใช้ (Admin เท่านั้น) ── -->
+      <div class="card" id="users-mgmt-card" style="display:none">
+        <h3>👥 จัดการผู้ใช้</h3>
+        <p style="font-size:13px;color:#888;margin-bottom:10px">
+          กำหนดสิทธิ์ผู้ใช้ — <strong>Admin</strong> ทำได้ทุกอย่าง รวมถึงจัดการสินค้าหลักและจัดการผู้ใช้<br>
+          <strong>พนักงานนับ</strong> เริ่ม-จบรอบนับ, นับสต๊อก/นับซ่อม, กรอกยอดขาย, อัปโหลดยอดคงเหลือ/ยอดขาย/FOC, และดูรายงานได้ — ทำไม่ได้แค่จัดการสินค้าหลัก (แท็บ "สินค้า") กับจัดการผู้ใช้<br>
+          <span style="color:#e67e22">ผู้ใช้ใหม่ต้องสร้างบัญชีผ่าน Supabase Dashboard ก่อน (Authentication → Users) แล้วจะมาปรากฏในรายการนี้เป็น "พนักงานนับ" โดยอัตโนมัติ</span>
+        </p>
+        <div id="users-list-wrap">
+          <div class="empty"><div class="em-icon">👥</div><p>กำลังโหลด...</p></div>
+        </div>
+      </div>
+
       <div class="card">
         <h3>ℹ️ เกี่ยวกับ</h3>
         <p style="font-size:13px;color:#888">NCH Stock Count v7 (Online)<br>นัทแคนดี้เฮาท์ จำกัด — ระบบนับสต็อกออนไลน์<br>รองรับหลายผู้ใช้พร้อมกัน | รายงานแบบ NCH Inventory Check List</p>
@@ -710,6 +732,13 @@ body{font-family:'Sarabun',sans-serif;background:#f0f2f5;color:#1a1a2e;min-heigh
 <!-- count-log-modal removed: history now shows inline -->
 
 <script>
+// ลงทะเบียน service worker — จำเป็นสำหรับเกณฑ์ installable PWA (Android/Chrome ใช้ตัดสินว่าแอป
+// "ติดตั้งเป็นแอปจริง" ได้ไหม) และให้เปิดแอปได้แม้เน็ตขาดชั่วคราว
+if('serviceWorker' in navigator){
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js').catch(function(e){ console.warn('[NCH] SW register failed:', e); });
+  });
+}
 // ══════════════════════════════════════════════
 //  ⚠️  ตั้งค่า Supabase ตรงนี้
 //  1. เปิด supabase.com → โปรเจกต์ของคุณ
@@ -1014,6 +1043,8 @@ async function showApp(){
   var cni = document.getElementById('counter-name-input');
   if(cni) cni.value = getUserDisplayName();
   populateBranches();
+  await loadMyRole();
+  applyRoleUI();
   await loadProducts();
   startOfflineRetry();
   setSyncDot('on');
@@ -2977,7 +3008,7 @@ async function loadReport(){
         '<td style="font-family:monospace;font-size:12px">'+esc(i.product_code||'')+'</td>'+
         '<td style="text-align:center">'+statusCell+'</td>'+
         '<td style="text-align:right">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
-        '<td style="text-align:right;font-weight:700;color:'+(i.uncounted?'#bbb':'#6c3483')+'">'+i.quantity.toLocaleString()+'</td>'+
+        '<td style="text-align:right;font-weight:700;color:'+(i.uncounted?'#bbb':'#6c3483')+'">'+(i.quantity?i.quantity.toLocaleString():'—')+'</td>'+
         '<td style="text-align:right;color:#e67e22">'+(i.sold_qty?i.sold_qty.toLocaleString():'—')+'</td>'+
         '<td style="text-align:right;color:#27ae60">'+(i.foc_qty?i.foc_qty.toLocaleString():'—')+'</td>'+
         '<td style="text-align:right;font-weight:700;color:'+(i.uncounted?'#bbb':diffClr)+'">'+diffTxt+'</td>'+
@@ -3012,7 +3043,7 @@ async function loadReport(){
       '<div style="flex:1;min-width:100px;background:#fff8f0;border-radius:8px;padding:8px;text-align:center">'+
       '<div style="font-size:11px;color:#888">ยังไม่นับ</div><div style="font-weight:700;color:#e67e22;font-size:18px">'+uncountedItems.length+'</div></div>'+
       '<div style="flex:1;min-width:100px;background:#fafafa;border-radius:8px;padding:8px;text-align:center">'+
-      '<div style="font-size:11px;color:#888">ทั้งหมด (Master)</div><div style="font-weight:700;color:#555;font-size:18px">'+totalProds+'</div></div>'+
+      '<div style="font-size:11px;color:#888">ทั้งหมด (ตามยอดคงเหลือ)</div><div style="font-weight:700;color:#555;font-size:18px">'+totalProds+'</div></div>'+
       '<div style="flex:1;min-width:100px;background:'+(pct===100?'#d5f5e3':'#fef9e7')+';border-radius:8px;padding:8px;text-align:center">'+
       '<div style="font-size:11px;color:#888">ความครบถ้วน</div><div style="font-weight:700;color:'+(pct===100?'#27ae60':'#e67e22')+';font-size:18px">'+pct+'%</div></div>'+
       '</div>'+
@@ -3765,6 +3796,74 @@ function getUserDisplayName(){
   if(!currentUser) return '';
   var meta = currentUser.user_metadata || {};
   return meta.full_name || meta.name || currentUser.email.split('@')[0];
+}
+
+// ═══════════════════════════════════════
+//  Authorization: role ของผู้ใช้ (admin / counter)
+//  - admin: จัดการสินค้า, อัปโหลดยอดคงเหลือ/ขาย/FOC, เริ่ม-จบ session, นับซ่อม, จัดการผู้ใช้
+//  - counter (พนักงานนับ): นับสต๊อกใน session ที่ admin เปิดไว้แล้ว, กรอกยอดขาย, ดูรายงาน
+//  บังคับจริงที่ชั้น RLS ใน Supabase อยู่แล้ว — ส่วนนี้แค่ซ่อน/ปิดปุ่มเพื่อ UX ที่ดี
+// ═══════════════════════════════════════
+var myRole = 'counter';
+
+async function loadMyRole(){
+  myRole = 'counter';
+  if(!currentUser) return;
+  try {
+    var { data, error } = await supabase.from('user_profiles')
+      .select('role').eq('user_id', currentUser.id).maybeSingle();
+    if(!error && data && data.role) myRole = data.role;
+  } catch(e){ console.warn('[NCH] loadMyRole failed:', e); }
+}
+
+function isAdmin(){ return myRole === 'admin'; }
+
+function applyRoleUI(){
+  var admin = isAdmin();
+  // แท็บ "สินค้า" — จัดการสินค้าได้เฉพาะ admin
+  var tabProd = document.getElementById('tab-products');
+  if(tabProd) tabProd.style.display = admin ? '' : 'none';
+  // การ์ดอัปโหลดข้อมูลหลักในหน้าตั้งค่า — เฉพาะ admin
+  document.querySelectorAll('.admin-only-card').forEach(function(el){
+    el.style.display = admin ? '' : 'none';
+  });
+  var usersCard = document.getElementById('users-mgmt-card');
+  if(usersCard){
+    usersCard.style.display = admin ? '' : 'none';
+    if(admin) loadUserList();
+  }
+  renderCounts(); // รีเฟรชปุ่มนับซ่อมในประวัติ/รายงานตาม role
+}
+
+async function loadUserList(){
+  var wrap = document.getElementById('users-list-wrap');
+  if(!wrap) return;
+  var { data, error } = await supabase.from('user_profiles')
+    .select('user_id,email,role,created_at').order('email');
+  if(error){ wrap.innerHTML = '<div style="color:#e74c3c;font-size:13px">โหลดรายชื่อผู้ใช้ไม่ได้: '+esc(error.message)+'</div>'; return; }
+  if(!data || !data.length){ wrap.innerHTML = '<div class="empty"><div class="em-icon">👥</div><p>ยังไม่มีผู้ใช้</p></div>'; return; }
+  wrap.innerHTML = data.map(function(u){
+    var isMe = currentUser && u.user_id === currentUser.id;
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee">'+
+      '<div style="flex:1;min-width:0">'+
+        '<div style="font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis">'+esc(u.email)+(isMe?' <span style="color:#888;font-weight:400;font-size:12px">(คุณ)</span>':'')+'</div>'+
+        '<div style="font-size:11px;color:#999">เข้าร่วม '+fmtDateTime(u.created_at)+'</div>'+
+      '</div>'+
+      '<select onchange="setUserRole(\''+u.user_id+'\', this.value)" '+(isMe?'disabled title="เปลี่ยน role ตัวเองไม่ได้ กันล็อกตัวเองออกจากสิทธิ์ Admin"':'')+' '+
+        'style="padding:7px 10px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff'+(isMe?';opacity:.6':'')+'">'+
+        '<option value="counter"'+(u.role==='counter'?' selected':'')+'>พนักงานนับ</option>'+
+        '<option value="admin"'+(u.role==='admin'?' selected':'')+'>Admin</option>'+
+      '</select>'+
+    '</div>';
+  }).join('');
+}
+
+async function setUserRole(targetUserId, newRole){
+  if(!isAdmin()){ toast('⛔ เฉพาะ Admin เท่านั้น'); loadUserList(); return; }
+  var { error } = await supabase.rpc('admin_set_user_role', { target_user_id: targetUserId, new_role: newRole });
+  if(error){ toast('❌ เปลี่ยน role ไม่ได้: '+error.message); loadUserList(); return; }
+  toast('✅ เปลี่ยนสิทธิ์แล้ว');
+  loadUserList();
 }
 
 function fmtDateTime(ts){
@@ -4566,10 +4665,10 @@ async function printStockReport(){
         '<td>'+esc(i.product_name)+'</td>'+
         '<td class="center '+(isOk?'st-ok':'st-ng')+'">'+(isOk?'ตรง':'ไม่ตรง')+'</td>'+
         '<td class="num">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
-        '<td class="num">'+i.quantity.toLocaleString()+'</td>'+
+        '<td class="num">'+(i.quantity?i.quantity.toLocaleString():'—')+'</td>'+
         '<td class="num">'+(sold?sold.toLocaleString():'—')+'</td>'+
         '<td class="num">'+(foc?foc.toLocaleString():'—')+'</td>'+
-        '<td class="num" style="'+(diff<0?'color:#cc0000':diff>0?'color:#1a6b3a':'')+'">'+(diff>=0?'+':'')+diff+'</td>'+
+        '<td class="num" style="'+(diff<0?'color:#cc0000':diff>0?'color:#1a6b3a':'')+'">'+(diff?((diff>=0?'+':'')+diff):'—')+'</td>'+
         '<td class="num">'+(price?price.toLocaleString():'—')+'</td>'+
         '<td class="num" style="'+(monDiff<0?'color:#cc0000':monDiff>0?'color:#1a6b3a':'font-weight:normal')+'">'+(price?(monDiff>=0?'+':'')+monDiff.toLocaleString():'—')+'</td>'+
         '</tr>';
@@ -4627,7 +4726,6 @@ async function printSession(sessionId){
   var items = s.count_items || [];
   var isDone = s.status === 'completed';
   var thaiDate = (s.count_date||'').split('-').reverse().join('/');
-  var totalProds = Object.keys(prods).length;
 
   // Load branch-specific balance + sales + foc for this session's branch + date
   var psBal = {}, psSales = {}, psFoc = {};
@@ -4690,6 +4788,8 @@ async function printSession(sessionId){
   var countedItems   = aggItems.filter(function(i){ return !i.uncounted; });
   var uncountedItems = aggItems.filter(function(i){ return i.uncounted; });
   var grandQty  = countedItems.reduce(function(a,i){ return a+i.quantity; },0);
+  // จำนวนรายการทั้งหมด = จำนวน SKU ที่อยู่ในยอดคงเหลือของสาขา+วันที่นี้เท่านั้น (ไม่ใช่สินค้าทั้งหมดในระบบ)
+  var totalProds = Object.keys(psBal).length;
   var pct = totalProds ? Math.round(countedItems.length/totalProds*100) : 0;
 
   // Filter: skip rows where balance=0, quantity=0, sold_qty=0, foc_qty=0 (all zero = no data)
@@ -4707,20 +4807,20 @@ async function printSession(sessionId){
     var isOk   = (!i.uncounted && diff===0);
     var stClass= isOk ? 'st-ok' : 'st-ng';
     var stTxt  = isOk ? 'ตรง' : 'ไม่ตรง';
-    var diffTxt= (diff>=0?'+':'')+diff.toLocaleString();
-    var monTxt = (monDiff>=0?'+':'')+monDiff.toLocaleString();
+    var diffTxt= diff ? ((diff>=0?'+':'')+diff.toLocaleString()) : '—';
+    var monTxt = (price && monDiff) ? ((monDiff>=0?'+':'')+monDiff.toLocaleString()) : '—';
     return '<tr>'+
       '<td class="center">'+rowNum+'</td>'+
       '<td>'+esc(i.product_code)+'</td>'+
       '<td>'+esc(i.product_name)+'</td>'+
       '<td class="center '+stClass+'">'+stTxt+'</td>'+
       '<td class="num">'+(i.balance?i.balance.toLocaleString():'—')+'</td>'+
-      '<td class="num">'+i.quantity.toLocaleString()+'</td>'+
+      '<td class="num">'+(i.quantity?i.quantity.toLocaleString():'—')+'</td>'+
       '<td class="num">'+(sold?sold.toLocaleString():'—')+'</td>'+
       '<td class="num">'+(foc?foc.toLocaleString():'—')+'</td>'+
       '<td class="num" style="'+(diff<0?'color:#cc0000':diff>0?'color:#1a6b3a':'')+'">'+diffTxt+'</td>'+
       '<td class="num">'+( price ? price.toLocaleString() : '—' )+'</td>'+
-      '<td class="num" style="'+(monDiff<0?'color:#cc0000':monDiff>0?'color:#1a6b3a':'font-weight:normal')+'">'+( price ? monTxt : '—' )+'</td>'+
+      '<td class="num" style="'+(monDiff<0?'color:#cc0000':monDiff>0?'color:#1a6b3a':'font-weight:normal')+'">'+monTxt+'</td>'+
       '</tr>';
   }).join('');
 
@@ -4916,6 +5016,9 @@ function closeCamScan(){
 function openPrintWindow(bodyHtml){
   var css = '<style>'+
     '@import url("https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap");'+
+    // บังคับแนวนอน + ลด margin กระดาษ — ตารางมี 11 คอลัมน์ ถ้าพิมพ์แนวตั้งตามค่า default ของเบราว์เซอร์
+    // จะบีบคอลัมน์จนชื่อสินค้าตัดขึ้นบรรทัดใหม่ 2-3 บรรทัด ทำให้ไฟล์ที่ Save as PDF หน้าตาไม่ตรงกับที่เห็นตอน view
+    '@page{size:A4 landscape;margin:10mm}'+
     'body{font-family:"Sarabun",sans-serif;font-size:10.5pt;color:#000;margin:14px;line-height:1.4}'+
     '.print-header{display:flex;align-items:center;gap:14px;border-bottom:3px solid #cc0000;padding-bottom:10px;margin-bottom:10px}'+
     '.print-logo{height:46px;object-fit:contain;flex-shrink:0}'+
@@ -4927,9 +5030,9 @@ function openPrintWindow(bodyHtml){
     '.print-meta-cell:last-child{border-right:none}'+
     '.print-meta-label{font-size:8.5pt;color:#666;display:block;margin-bottom:1px}'+
     '.print-meta-val{font-weight:700}'+
-    'table{width:100%;border-collapse:collapse;font-size:9.5pt;margin-bottom:10px}'+
+    'table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:9.5pt;margin-bottom:10px}'+
     'th{background:#cc0000;color:#fff;padding:5px 5px;font-weight:700;border:1px solid #a00;text-align:left;font-size:9pt;white-space:nowrap}'+
-    'td{padding:4px 5px;border:1px solid #ddd;vertical-align:middle}'+
+    'td{padding:4px 5px;border:1px solid #ddd;vertical-align:middle;overflow-wrap:break-word}'+
     'tbody tr:nth-child(even){background:#fafafa}'+
     'tfoot td{background:#f0f0f0;font-weight:700;border-top:2px solid #aaa}'+
     '.st-ok{color:#1a6b3a;font-weight:600}'+
